@@ -5,9 +5,17 @@
 
 ## 최종 하드웨어 플랫폼
 
-바닥에 붙어 이동하는 **옴니휠 모바일 베이스** + 그 위에 **M0609 로봇팔 + 흡착 그리퍼 + RealSense 카메라**.
+바닥에 붙어 이동하는 **옴니휠 모바일 베이스** + **승강 리프트** + 그 위에 **M0609 로봇팔 + 흡착 그리퍼 + RealSense 카메라**.
 (Isaac Sim 프로토타입에서 쓰던 Nova Carter는 시뮬레이션 전용 placeholder였고, 최종 실기체가 아님 —
 `cart2trunk_platform`의 컨트롤러/어댑터 네이밍은 특정 로봇명에 종속되지 않도록 일반화한다.)
+
+| 구성 요소 | 담당 컨트롤러(`cart2trunk_platform`) |
+| --- | --- |
+| 옴니휠 모바일 베이스 | `mobile_base_controller.py` |
+| 승강 리프트 | `lift_controller.py` |
+| M0609 로봇팔 | `m0609_controller.py` |
+| 흡착 그리퍼 | `gripper_controller.py` |
+| RealSense 카메라 | `camera_controller.py` |
 
 ## PC 역할
 
