@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'trunk_scan_action_server = cart2trunk_perception.trunk_scan_action_server:main',
         ],
     },
 )

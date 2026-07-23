@@ -1,0 +1,5 @@
+# open3d/scipy는 rosdep(apt) 패키지가 없어서 pip으로 따로 설치해야 한다.
+# numpy/opencv는 시스템 ROS2(cv_bridge 등)와 ABI가 맞아야 하므로 버전을 고정하지 않고
+# 이미 설치된 시스템 버전을 우선 사용할 것 - EDU 저장소 perception/requirements.txt와 동일 이유.
+open3d>=0.18
+scipy>=1.10
