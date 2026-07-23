@@ -10,6 +10,8 @@ NOTE: trunk_map.inner_size / occupied_boxes는 이미 trunk_frame 로컬 좌표�
 AABB를 뽑아내는 TrunkWorldMap.to_bounding_trunk() 변환은 perception(MSI1) 이관
 시 다시 검토한다 - 지금은 perception이 이미 처리해서 보낸다고 가정.
 """
+import math
+
 import rclpy
 from rclpy.action import ActionServer
 from rclpy.node import Node
@@ -18,12 +20,14 @@ from geometry_msgs.msg import Pose
 from cart2trunk_interfaces.action import ComputeLoadPlan
 from cart2trunk_interfaces.msg import PickPlaceTask
 
+from cart2trunk_common import error_codes
+from cart2trunk_common.geometry import IDENTITY_QUATERNION, center_to_corner, corner_to_center, quaternion_from_z_yaw
+
 from cart2trunk_planning.core.extreme_point_candidates import Box, PlacedBox
 from cart2trunk_planning.core.trunk_space_state import Trunk
 from cart2trunk_planning.core.rescan_replan import replan_after_rescan
 
-_IDENTITY_QUAT = (0.0, 0.0, 0.0, 1.0)
-_ROTATED_90DEG_Z_QUAT = (0.0, 0.0, 0.70710678, 0.70710678)
+_ROTATED_90DEG_Z_QUAT = quaternion_from_z_yaw(math.pi / 2)
 
 
 def box3d_to_core_box(box3d) -> Box:
@@ -35,7 +39,8 @@ def occupied_box3d_to_placed_box(box3d) -> PlacedBox:
     쓰는 최소 코너 좌표(x,y,z) 컨벤션으로 변환한다."""
     box = box3d_to_core_box(box3d)
     p = box3d.detected_pose.position
-    return PlacedBox(box=box, x=p.x - box.width / 2.0, y=p.y - box.depth / 2.0, z=p.z - box.height / 2.0)
+    x, y, z = center_to_corner((p.x, p.y, p.z), (box.width, box.depth, box.height))
+    return PlacedBox(box=box, x=x, y=y, z=z)
 
 
 def plan_to_task(plan, box_snapshot_id: str, trunk_map_id: str) -> PickPlaceTask:
@@ -43,13 +48,12 @@ def plan_to_task(plan, box_snapshot_id: str, trunk_map_id: str) -> PickPlaceTask
     task.task_id = f'{plan.box_id}_{plan.order}'
     task.box_id = plan.box_id
 
-    x, y, z = plan.position
-    w, d, h = plan.dimensions
+    cx, cy, cz = corner_to_center(plan.position, plan.dimensions)
     pose = Pose()
-    pose.position.x = x + w / 2.0
-    pose.position.y = y + d / 2.0
-    pose.position.z = z + h / 2.0
-    qx, qy, qz, qw = _ROTATED_90DEG_Z_QUAT if plan.rotated else _IDENTITY_QUAT
+    pose.position.x = cx
+    pose.position.y = cy
+    pose.position.z = cz
+    qx, qy, qz, qw = _ROTATED_90DEG_Z_QUAT if plan.rotated else IDENTITY_QUATERNION
     pose.orientation.x = qx
     pose.orientation.y = qy
     pose.orientation.z = qz
@@ -105,7 +109,7 @@ class LoadingPlannerActionServer(Node):
         except Exception as exc:
             self.get_logger().error(f'ComputeLoadPlan 실패: {exc}')
             result.success = False
-            result.error_code = 'INVALID_BOX_DATA'
+            result.error_code = error_codes.INVALID_BOX_DATA
             result.message = str(exc)
             goal_handle.abort()
             return result
@@ -114,7 +118,7 @@ class LoadingPlannerActionServer(Node):
 
         if not tasks and goal.boxes.boxes:
             result.success = False
-            result.error_code = 'NO_FEASIBLE_PLACEMENT'
+            result.error_code = error_codes.NO_FEASIBLE_PLACEMENT
             reasons = ', '.join(f'{u.box_id}={u.reason.value}' for u in unloadable)
             result.message = f'{len(unloadable)}개 박스 모두 미적재 ({reasons})'
             goal_handle.abort()

@@ -26,6 +26,9 @@ from rclpy.node import Node
 from cart2trunk_interfaces.action import ScanTrunk
 from cart2trunk_interfaces.msg import Box3D, TrunkMap
 
+from cart2trunk_common import error_codes
+from cart2trunk_common.geometry import corner_to_center, subtract_offset
+
 from cart2trunk_perception.core.trunk_map_builder import build_trunk_map_from_scan
 
 
@@ -53,20 +56,22 @@ def trunk_map_dict_to_msg(trunk_map: dict) -> TrunkMap:
     msg.inner_size.y = y_max - y_min
     msg.inner_size.z = ceiling_z - floor_z
 
+    trunk_origin = (x_min, y_min, floor_z)
     occupied = []
     for obs in trunk_map.get('obstacles', []):
         ov = obs['vertices']
-        ox_min, oy_min, oz_min = ov[0]
-        ox_max, oy_max, oz_max = ov[6]
+        o_min = tuple(ov[0])
+        o_max = tuple(ov[6])
+        size = tuple(hi - lo for hi, lo in zip(o_max, o_min))
+        center_base = corner_to_center(o_min, size)
+        cx, cy, cz = subtract_offset(center_base, trunk_origin)
 
         box = Box3D()
         box.box_id = obs['name']
-        box.size.x = ox_max - ox_min
-        box.size.y = oy_max - oy_min
-        box.size.z = oz_max - oz_min
-        box.detected_pose.position.x = (ox_min + ox_max) / 2.0 - x_min
-        box.detected_pose.position.y = (oy_min + oy_max) / 2.0 - y_min
-        box.detected_pose.position.z = (oz_min + oz_max) / 2.0 - floor_z
+        box.size.x, box.size.y, box.size.z = size
+        box.detected_pose.position.x = cx
+        box.detected_pose.position.y = cy
+        box.detected_pose.position.z = cz
         box.detected_pose.orientation.w = 1.0
         occupied.append(box)
     msg.occupied_boxes = occupied
@@ -106,7 +111,7 @@ class TrunkScanActionServer(Node):
                 '실시간 Depth 누적은 아직 미구현 - fixture_run_dir 파라미터로 replay 모드만 지원',
             )
             result.success = False
-            result.error_code = 'DEPTH_TIMEOUT'
+            result.error_code = error_codes.DEPTH_TIMEOUT
             result.message = (
                 '실시간 스캔 미구현: fixture_run_dir 파라미터에 캡처된 run 폴더 경로를 지정하세요'
             )
@@ -118,7 +123,7 @@ class TrunkScanActionServer(Node):
         except Exception as exc:
             self.get_logger().error(f'ScanTrunk 실패: {exc}')
             result.success = False
-            result.error_code = 'MAP_QUALITY_LOW'
+            result.error_code = error_codes.MAP_QUALITY_LOW
             result.message = str(exc)
             goal_handle.abort()
             return result

@@ -25,6 +25,8 @@ from cart2trunk_interfaces.action import ComputeLoadPlan, ExecutePickPlace, RunL
 from cart2trunk_interfaces.msg import BoxArray, MissionState as MissionStateMsg
 from cart2trunk_interfaces.srv import ResetMission
 
+from cart2trunk_common import error_codes
+
 from cart2trunk_coordinator.mission_state_machine import (
     InvalidTransition, MissionEvent, MissionState, MissionStateMachine,
 )
@@ -103,17 +105,17 @@ class MissionCoordinatorNode(Node):
         event = threading.Event()
         future.add_done_callback(lambda _f: event.set())
         if not event.wait(timeout_sec):
-            raise MissionAborted('ACTION_TIMEOUT', f'{action_name} 응답 시간 초과({timeout_sec}s)')
+            raise MissionAborted(error_codes.ACTION_TIMEOUT, f'{action_name} 응답 시간 초과({timeout_sec}s)')
         return future.result()
 
     def _call_action(self, client: ActionClient, goal, action_name: str, timeout_sec: float = 30.0):
         if not client.wait_for_server(timeout_sec=5.0):
-            raise MissionAborted('ACTION_SERVER_UNAVAILABLE', f'{action_name} 서버 없음')
+            raise MissionAborted(error_codes.ACTION_SERVER_UNAVAILABLE, f'{action_name} 서버 없음')
 
         send_future = client.send_goal_async(goal)
         goal_handle = self._wait_for_future(send_future, timeout_sec, action_name)
         if goal_handle is None or not goal_handle.accepted:
-            raise MissionAborted('GOAL_REJECTED', f'{action_name} goal이 거부됨')
+            raise MissionAborted(error_codes.GOAL_REJECTED, f'{action_name} goal이 거부됨')
 
         result_future = goal_handle.get_result_async()
         wrapped = self._wait_for_future(result_future, timeout_sec, action_name)
