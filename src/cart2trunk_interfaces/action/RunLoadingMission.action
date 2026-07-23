@@ -1,0 +1,12 @@
+string request_id
+bool auto_continue
+---
+bool success
+uint32 placed_count
+uint32 remaining_count
+string error_code
+string message
+---
+string mission_state
+float32 progress
+string detail

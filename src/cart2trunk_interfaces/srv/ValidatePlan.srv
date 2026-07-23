@@ -1,0 +1,4 @@
+LoadPlan plan
+---
+bool valid
+string reason

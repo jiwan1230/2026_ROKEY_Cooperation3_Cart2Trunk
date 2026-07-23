@@ -1,0 +1,10 @@
+PickPlaceTask task
+---
+bool success
+string execution_id
+string error_code
+string message
+---
+string phase
+float32 progress
+geometry_msgs/Pose current_tool_pose

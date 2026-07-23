@@ -1,0 +1,16 @@
+string request_id
+uint32 min_frames
+float32 capture_duration
+bool force_rescan
+---
+bool success
+string snapshot_id
+Box3D[] boxes
+float32 quality_score
+string error_code
+string message
+---
+string current_stage
+uint32 collected_frames
+float32 progress
+string detail

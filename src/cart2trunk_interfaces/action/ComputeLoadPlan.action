@@ -1,0 +1,18 @@
+string request_id
+
+BoxArray boxes
+TrunkMap trunk_map
+
+bool return_full_plan
+---
+bool success
+string plan_id
+PickPlaceTask[] tasks
+float32 total_score
+string error_code
+string message
+---
+string current_stage
+uint32 evaluated_candidates
+float32 best_score
+float32 progress

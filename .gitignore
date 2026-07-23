@@ -1,0 +1,15 @@
+build/
+install/
+log/
+
+__pycache__/
+*.pyc
+.venv/
+
+*.usd
+*.usda
+*.usdc
+!**/assets/README.md
+
+.vscode/
+*.egg-info/
