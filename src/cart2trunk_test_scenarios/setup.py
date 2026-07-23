@@ -24,6 +24,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'dummy_scan_boxes_server = cart2trunk_test_scenarios.dummy_scan_boxes_server:main',
+            'dummy_execute_pick_place_server = cart2trunk_test_scenarios.dummy_execute_pick_place_server:main',
         ],
     },
 )

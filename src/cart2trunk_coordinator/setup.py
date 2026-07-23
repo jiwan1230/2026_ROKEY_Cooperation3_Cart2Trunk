@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'mission_coordinator_node = cart2trunk_coordinator.mission_coordinator_node:main',
         ],
     },
 )

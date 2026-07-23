@@ -123,7 +123,7 @@ class LoadingPlannerActionServer(Node):
         result.success = True
         result.plan_id = f'plan_{goal.request_id}' if goal.request_id else f'plan_{self.get_clock().now().nanoseconds}'
         result.tasks = tasks
-        result.total_score = sum(p.score for p in plans)
+        result.total_score = float(sum(p.score for p in plans))
         result.error_code = ''
         result.message = (
             f'{len(tasks)}개 배치, {len(unloadable)}개 미적재' if unloadable else f'{len(tasks)}개 전부 배치'
