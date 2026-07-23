@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'loading_planner_action_server = cart2trunk_planning.loading_planner_action_server:main',
         ],
     },
 )

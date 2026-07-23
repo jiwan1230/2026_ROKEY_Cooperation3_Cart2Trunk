@@ -1,10 +1,14 @@
-"""Lenovo: 적재 순서·배치 계획.
-
-이관 완료 시 여기에 다음 노드를 추가한다:
-- cart2trunk_planning loading_planner_action_server
-"""
+"""Lenovo: 적재 순서·배치 계획."""
 from launch import LaunchDescription
+from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    return LaunchDescription([])
+    return LaunchDescription([
+        Node(
+            package='cart2trunk_planning',
+            executable='loading_planner_action_server',
+            name='loading_planner_action_server',
+            output='screen',
+        ),
+    ])
