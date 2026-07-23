@@ -3,13 +3,14 @@
 <package format="3">
   <name>cart2trunk_planning</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>Loading order and placement planning algorithm (Lenovo)</description>
   <maintainer email="gwanshin12301230@gmail.com">jiwan</maintainer>
-  <license>TODO: License declaration</license>
+  <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
   <depend>geometry_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>cart2trunk_interfaces</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

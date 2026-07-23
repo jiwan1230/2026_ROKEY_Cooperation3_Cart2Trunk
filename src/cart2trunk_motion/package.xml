@@ -1,14 +1,15 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>cart2trunk_hmi</name>
+  <name>cart2trunk_motion</name>
   <version>0.0.0</version>
-  <description>Flask/WebSocket HMI backend</description>
+  <description>Action servers composing platform controllers into scan/pick/transport/place task sequences</description>
   <maintainer email="gwanshin12301230@gmail.com">jiwan</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
-  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>cart2trunk_interfaces</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

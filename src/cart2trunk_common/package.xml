@@ -3,9 +3,9 @@
 <package format="3">
   <name>cart2trunk_common</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>Shared coordinate transforms, data validation, and error codes</description>
   <maintainer email="gwanshin12301230@gmail.com">jiwan</maintainer>
-  <license>TODO: License declaration</license>
+  <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
   <depend>geometry_msgs</depend>

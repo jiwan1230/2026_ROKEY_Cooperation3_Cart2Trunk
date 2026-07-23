@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'cart2trunk_safety'
+package_name = 'cart2trunk_test_scenarios'
 
 setup(
     name=package_name,
@@ -15,7 +15,7 @@ setup(
     zip_safe=True,
     maintainer='jiwan',
     maintainer_email='gwanshin12301230@gmail.com',
-    description='Emergency stop, human detection, and node watchdog supervisor',
+    description='Reduced-scale integration test rig (table + crate) for validating the perception-planning-motion communication flow',
     license='Apache-2.0',
     extras_require={
         'test': [

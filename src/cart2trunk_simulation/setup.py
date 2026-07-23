@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'cart2trunk_sim'
+package_name = 'cart2trunk_simulation'
 
 setup(
     name=package_name,
@@ -15,8 +15,8 @@ setup(
     zip_safe=True,
     maintainer='jiwan',
     maintainer_email='gwanshin12301230@gmail.com',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    description='Isaac Sim scene, asset, and sensor bridge for MSI2',
+    license='Apache-2.0',
     extras_require={
         'test': [
             'pytest',

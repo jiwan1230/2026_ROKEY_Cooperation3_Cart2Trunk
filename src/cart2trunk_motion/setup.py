@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'cart2trunk_execution'
+package_name = 'cart2trunk_motion'
 
 setup(
     name=package_name,
@@ -15,8 +15,8 @@ setup(
     zip_safe=True,
     maintainer='jiwan',
     maintainer_email='gwanshin12301230@gmail.com',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    description='Action servers composing platform controllers into scan/pick/transport/place task sequences',
+    license='Apache-2.0',
     extras_require={
         'test': [
             'pytest',

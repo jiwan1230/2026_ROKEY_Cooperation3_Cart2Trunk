@@ -15,8 +15,8 @@ setup(
     zip_safe=True,
     maintainer='jiwan',
     maintainer_email='gwanshin12301230@gmail.com',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    description='Depth-based box and trunk-space perception (MSI1)',
+    license='Apache-2.0',
     extras_require={
         'test': [
             'pytest',
