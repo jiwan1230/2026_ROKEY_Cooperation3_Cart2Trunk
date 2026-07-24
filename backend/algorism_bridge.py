@@ -16,7 +16,7 @@ import json
 import sys
 import pathlib
 from importlib import import_module
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 _HERE = pathlib.Path(__file__).resolve().parent
 _CART2TRUNK_DIR = _HERE.parent.parent
