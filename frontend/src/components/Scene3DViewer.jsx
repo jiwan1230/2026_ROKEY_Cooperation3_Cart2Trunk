@@ -59,6 +59,30 @@ function SceneBoxMesh({ position, dimensions, color, dashed }) {
   );
 }
 
+const STEP_DELAY_MS = 700; // "순서대로 재생"에서 박스 하나가 나타나고 다음 박스까지 기다리는 시간
+
+// 브라우저 창을 DPI(픽셀 밀도)가 다른 모니터로 옮기면, react-three-fiber의
+// WebGL 캔버스가 예전 모니터 기준 해상도로 고정된 채 안 바뀌어서 화면이
+// 흐려지거나 깨지는 문제가 있다(사용자 리포트, 듀얼 모니터 환경) - 이건 이
+// 라이브러리의 알려진 동작이다: 엘리먼트 "크기"가 바뀔 때는 ResizeObserver로
+// 알아서 다시 그리지만, 크기는 그대로인데 devicePixelRatio만 바뀌는 경우는
+// 별도로 감지하지 않는다. matchMedia로 devicePixelRatio 변화를 직접 감지해서
+// Canvas를 강제로 새로 마운트(key로 트리거)하면 새 모니터 기준으로 WebGL
+// 컨텍스트가 다시 만들어진다.
+function useDevicePixelRatio() {
+  const [dpr, setDpr] = useState(() => (typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1));
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return undefined;
+    const mediaQuery = window.matchMedia(`(resolution: ${dpr}dppx)`);
+    const handleChange = () => setDpr(window.devicePixelRatio || 1);
+    mediaQuery.addEventListener("change", handleChange);
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }, [dpr]);
+
+  return dpr;
+}
+
 const CAMERA_PRESETS = {
   // "front"은 완전한 정면(x축 일직선)이 아니라 살짝 대각선 위에서 내려다보는
   // 각도로 잡는다 - 완전 정면이면 트렁크 입구 밖에 대기 중인 박스(음수 x
@@ -77,6 +101,39 @@ export default function Scene3DViewer() {
   // "적재된 박스를 보여줄지"만 토글한다 - Before는 트렁크(+ 장애물)만 빈
   // 상태로 보여준다(카트 박스는 적재 전엔 트렁크 안 실제 좌표가 없으므로).
   const [stage, setStage] = useState("after"); // "before" | "after"
+  const dpr = useDevicePixelRatio();
+
+  const placed = state.result?.placed || [];
+  // "순서대로 재생" - visibleCount만큼만(order 순서대로) 박스를 보여준다.
+  // null이면 "재생 안 함" 상태로, 전부 다 보여준다(기본 동작).
+  const [visibleCount, setVisibleCount] = useState(null);
+  const [animating, setAnimating] = useState(false);
+
+  // 새로 계산된 결과가 들어오면 재생 상태를 초기화하고 전부 다 보여주는
+  // 기본 상태로 되돌린다 - 이전 재생의 중간 상태가 새 계획에 남아있으면 안 됨.
+  useEffect(() => {
+    setAnimating(false);
+    setVisibleCount(null);
+  }, [state.result]);
+
+  useEffect(() => {
+    if (!animating) return undefined;
+    if (visibleCount >= placed.length) {
+      setAnimating(false);
+      return undefined;
+    }
+    const timer = setTimeout(() => setVisibleCount((c) => c + 1), STEP_DELAY_MS);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [animating, visibleCount, placed.length]);
+
+  const handlePlayStepByStep = () => {
+    if (placed.length === 0) return;
+    setVisibleCount(0);
+    setAnimating(true);
+  };
+
+  const visiblePlaced = visibleCount === null ? placed : placed.slice(0, visibleCount);
 
   useEffect(() => {
     const controls = controlsRef.current;
@@ -132,12 +189,17 @@ export default function Scene3DViewer() {
           ))}
         </div>
         <div className={styles.presetBar}>
+          {showPlaced && placed.length > 0 && (
+            <button type="button" disabled={animating} onClick={handlePlayStepByStep}>
+              {animating ? `▶ 재생 중 (${visibleCount}/${placed.length})` : "▶ 순서대로 재생"}
+            </button>
+          )}
           {Object.keys(CAMERA_PRESETS).map((name) => (
             <button key={name} type="button" onClick={() => setPreset(name)}>{name}</button>
           ))}
         </div>
       </div>
-      <Canvas camera={{ position: CAMERA_PRESETS.front.position, fov: 50 }}>
+      <Canvas key={dpr} dpr={dpr} camera={{ position: CAMERA_PRESETS.front.position, fov: 50 }}>
         <ambientLight intensity={0.7} />
         <directionalLight position={[3, 5, 3]} intensity={0.6} />
         <OrbitControls ref={controlsRef} />
@@ -146,7 +208,7 @@ export default function Scene3DViewer() {
           <SceneBoxMesh key={o.id} position={[o.x, o.y, o.z]}
                         dimensions={[o.width, o.depth, o.height]} color="#7f8c8d" />
         ))}
-        {showPlaced && state.result?.placed?.map((p) => (
+        {showPlaced && visiblePlaced.map((p) => (
           <SceneBoxMesh key={p.box_id} position={p.position} dimensions={p.dimensions}
                         color={colorForBoxId(p.box_id)} dashed={p.position[2] > 1e-6} />
         ))}
