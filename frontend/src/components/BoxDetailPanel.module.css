@@ -1,0 +1,7 @@
+.panel { background: var(--color-surface); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.label { font-size: 11px; font-weight: 700; color: var(--color-text-secondary); text-transform: uppercase; }
+.select { border: 1px solid var(--color-border); border-radius: 8px; padding: 6px 8px; }
+.detail { font-size: 12px; display: flex; flex-direction: column; gap: 6px; }
+.table { border-collapse: collapse; font-size: 12px; }
+.table td { padding: 3px 8px; border-bottom: 1px solid var(--color-border); }
+.placeholder { font-size: 12px; color: var(--color-text-secondary); }
