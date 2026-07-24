@@ -1,5 +1,6 @@
 // src/components/SummaryCard.jsx
 import { usePlannerState } from "../state/PlannerContext.jsx";
+import { gradeUtilization } from "../utils/scoreGrading.js";
 import styles from "./SummaryCard.module.css";
 
 const STATUS_LABEL = {
@@ -18,10 +19,25 @@ export default function SummaryCard() {
       <div className={styles.row}><span>전체</span><strong>{summary ? summary.total : "-"}</strong></div>
       <div className={styles.row}><span>적재됨</span><strong>{summary ? summary.placed : "-"}</strong></div>
       <div className={styles.row}><span>미적재</span><strong>{summary ? summary.unplaced : "-"}</strong></div>
-      <div className={styles.row}><span>공간 활용률</span><strong>{summary ? `${summary.utilization_pct.toFixed(1)}%` : "-"}</strong></div>
+      <div className={styles.row}>
+        <span>공간 활용률</span>
+        <strong>
+          {summary ? `${summary.utilization_pct.toFixed(1)}%` : "-"}
+          {summary && (
+            <span className={styles.grade} data-grade={gradeUtilization(summary.utilization_pct).label}>
+              {gradeUtilization(summary.utilization_pct).label}
+            </span>
+          )}
+        </strong>
+      </div>
       <div className={styles.row}><span>평균 점수</span><strong>{summary ? summary.avg_score.toFixed(3) : "-"}</strong></div>
       <div className={styles.row}><span>계산 시간</span><strong>{summary ? `${summary.calc_time_ms.toFixed(0)}ms` : "-"}</strong></div>
       <div className={styles.status}>상태: {STATUS_LABEL[state.planState]}</div>
+      {summary && (
+        <div className={styles.criteria}>
+          공간 활용률 기준: 60%↑ 우수 · 40~60% 양호 · 20~40% 보통 · 20%↓ 개선 필요
+        </div>
+      )}
     </div>
   );
 }

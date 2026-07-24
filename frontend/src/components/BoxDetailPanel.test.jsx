@@ -42,6 +42,8 @@ describe("BoxDetailPanel", () => {
     await userEvent.click(screen.getByText("load"));
     expect(screen.getByText(/적재순서 1/)).toBeInTheDocument();
     expect(screen.getByText("-0.250")).toBeInTheDocument();
+    // score=0.42, 기본 우선순위(1.0/1.0/1.0) 범위[-1.6, 1.0] 기준 상위 22.3% -> 개선 필요
+    expect(screen.getByText("개선 필요")).toBeInTheDocument();
   });
 
   it("shows count-first-density formula score breakdown when that formula was used", async () => {
@@ -54,5 +56,6 @@ describe("BoxDetailPanel", () => {
     await userEvent.click(screen.getByText("load"));
     expect(screen.getByText("새 영역 확장 항(불리)")).toBeInTheDocument();
     expect(screen.getByText("1.000")).toBeInTheDocument();
+    expect(screen.getByText(/개수 우선 모드에서는/)).toBeInTheDocument();
   });
 });
