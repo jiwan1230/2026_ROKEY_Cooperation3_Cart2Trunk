@@ -50,10 +50,18 @@ def post_plan():
 
     try:
         trunk_map_path = bridge._trunk_map_path(trunk_map_name)
-        trunk_map_data = json.loads(trunk_map_path.read_text())
     except ValueError as e:
         raise ApiError(404, "TRUNK_MAP_NOT_FOUND", str(e),
                         "트렁크 스캔 파일 목록을 새로고침(GET /api/trunk-maps)한 뒤 다시 선택하세요.")
+
+    try:
+        trunk_map_data = json.loads(trunk_map_path.read_text())
+    except json.JSONDecodeError as e:
+        raise ApiError(
+            400, "TRUNK_MAP_JSON_INVALID", str(e),
+            "해당 트렁크 스캔 파일(trunk_map.json)이 손상되었을 수 있습니다. "
+            "준형님께 재스캔을 요청하거나 다른 스캔 파일을 선택하세요.",
+        )
 
     try:
         result = bridge.compute_plan(
