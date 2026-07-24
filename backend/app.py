@@ -18,6 +18,9 @@ def create_app():
     from routes.plan import plan_bp, ApiError
     app.register_blueprint(plan_bp)
 
+    from routes.approval import approval_bp
+    app.register_blueprint(approval_bp)
+
     @app.errorhandler(ApiError)
     def handle_api_error(err):
         return err.to_response()
