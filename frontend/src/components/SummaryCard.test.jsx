@@ -22,11 +22,37 @@ describe("SummaryCard", () => {
   it("shows a utilization grade badge once a plan is computed", async () => {
     const payload = {
       placed: [], log_lines: [],
-      summary: { total: 3, placed: 2, unplaced: 1, utilization_pct: 65, avg_score: -0.5, calc_time_ms: 3 },
+      summary: { total: 3, placed: 2, unplaced: 1, utilization_pct: 25, avg_score: -0.5, calc_time_ms: 3 },
     };
     render(<PlannerProvider><Loader payload={payload} /><SummaryCard /></PlannerProvider>);
     await userEvent.click(screen.getByText("load"));
-    expect(screen.getByText("65.0%")).toBeInTheDocument();
+    expect(screen.getByText("25.0%")).toBeInTheDocument();
     expect(screen.getByText("우수")).toBeInTheDocument();
+  });
+
+  it("shows an average-score grade badge next to 평균 점수 when all placed boxes use the weighted formula", async () => {
+    const payload = {
+      log_lines: [],
+      placed: [
+        { box_id: "A", score_breakdown: { formula: "weighted" } },
+        { box_id: "B", score_breakdown: { formula: "weighted" } },
+      ],
+      summary: { total: 2, placed: 2, unplaced: 0, utilization_pct: 10, avg_score: -0.5, calc_time_ms: 3 },
+    };
+    render(<PlannerProvider><Loader payload={payload} /><SummaryCard /></PlannerProvider>);
+    await userEvent.click(screen.getByText("load"));
+    expect(screen.getByText("-0.500")).toBeInTheDocument();
+    expect(screen.getByText(/점수 등급: 지금 우선순위 설정 기준/)).toBeInTheDocument();
+  });
+
+  it("hides the score grade when count_first_density formula is mixed in", async () => {
+    const payload = {
+      log_lines: [],
+      placed: [{ box_id: "A", score_breakdown: { formula: "count_first_density" } }],
+      summary: { total: 1, placed: 1, unplaced: 0, utilization_pct: 10, avg_score: 1.2, calc_time_ms: 3 },
+    };
+    render(<PlannerProvider><Loader payload={payload} /><SummaryCard /></PlannerProvider>);
+    await userEvent.click(screen.getByText("load"));
+    expect(screen.queryByText(/점수 등급:/)).not.toBeInTheDocument();
   });
 });

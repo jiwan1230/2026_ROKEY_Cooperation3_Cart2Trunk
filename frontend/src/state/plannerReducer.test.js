@@ -12,6 +12,24 @@ describe("plannerReducer", () => {
     expect(JSON.parse(state.boxesText)).toHaveLength(1);
   });
 
+  it("prefers the '기본값 (Large/Medium/Small)' preset over the alphabetically-first one", () => {
+    // 백엔드 GET /api/box-presets는 알파벳/가나다 순으로 정렬돼서 오므로
+    // "few_large" 같은 게 항상 첫 번째 키가 된다 - 브라우저를 처음 열었을 때
+    // 그게 아니라 팀의 기본 프리셋이 선택돼 있어야 한다는 피드백을 반영.
+    const state = plannerReducer(initialState, {
+      type: "RESOURCES_LOADED",
+      payload: {
+        trunkMaps: ["run_a"],
+        boxPresets: {
+          few_large: [{ id: "XL1", width: 0.55, depth: 0.4, height: 0.35 }],
+          "기본값 (Large/Medium/Small)": [{ id: "Large", width: 0.5, depth: 0.35, height: 0.3 }],
+        },
+      },
+    });
+    expect(state.boxPresetName).toBe("기본값 (Large/Medium/Small)");
+    expect(JSON.parse(state.boxesText)).toEqual([{ id: "Large", width: 0.5, depth: 0.35, height: 0.3 }]);
+  });
+
   it("invalidates a computed plan when a param changes", () => {
     const computed = { ...initialState, planState: "COMPUTED" };
     const next = plannerReducer(computed, { type: "SET_PARAM", payload: { key: "mode", value: "count_first" } });

@@ -2,14 +2,17 @@ import { describe, expect, it } from "vitest";
 import { gradeUtilization, gradeWeightedScore, weightedScoreRange } from "./scoreGrading.js";
 
 describe("gradeUtilization", () => {
+  // 임계값(22/14/8)은 실제 트렁크 스캔 3종 + 박스 프리셋 4종 + 무작위 생성
+  // 30여 회를 직접 계산해서 얻은 실측 분포를 근거로 잡았다 - 100% 배치
+  // 성공(팀 "기본값" 프리셋)조차 활용률 17.2%였다는 게 재보정의 근거.
   it("labels high utilization as excellent", () => {
-    expect(gradeUtilization(65).label).toBe("우수");
+    expect(gradeUtilization(25).label).toBe("우수");
   });
   it("labels mid utilization as good", () => {
-    expect(gradeUtilization(45).label).toBe("양호");
+    expect(gradeUtilization(17).label).toBe("양호"); // 팀 "기본값" 프리셋 실측치(17.2%)와 같은 구간
   });
   it("labels low-mid utilization as fair", () => {
-    expect(gradeUtilization(25).label).toBe("보통");
+    expect(gradeUtilization(10).label).toBe("보통");
   });
   it("labels very low utilization as needs improvement", () => {
     expect(gradeUtilization(5).label).toBe("개선 필요");

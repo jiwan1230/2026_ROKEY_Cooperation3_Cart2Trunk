@@ -40,19 +40,30 @@ function invalidateIfNeeded(state) {
   return appendLog(next, `[무효화] 파라미터가 변경되어 기존 계획을 무효화했습니다${wasApproved ? " (승인도 함께 취소됨)" : ""}.`);
 }
 
+// 백엔드 algorism_bridge.list_box_presets()가 항상 이 이름으로 기본 프리셋
+// (Large/Medium/Small)을 넣어준다 - 브라우저를 처음 열었을 때 알파벳/가나다
+// 순으로 매겨지는 첫 번째 프리셋(예: "few_large")이 아니라 이 기본 프리셋이
+// 선택되어 있어야 한다는 사용자 피드백. 백엔드 문자열이 바뀌면 여기도 같이
+// 바꿔야 한다 - 못 찾으면(이름이 어긋났거나 프리셋 자체가 없으면) 안전하게
+// 첫 번째 프리셋으로 폴백한다.
+const DEFAULT_PRESET_NAME = "기본값 (Large/Medium/Small)";
+
 export function plannerReducer(state, action) {
   switch (action.type) {
     case "RESOURCES_LOADED": {
       const { trunkMaps, boxPresets } = action.payload;
-      const firstPresetName = Object.keys(boxPresets)[0] || "";
+      const presetNames = Object.keys(boxPresets);
+      const initialPresetName = presetNames.includes(DEFAULT_PRESET_NAME)
+        ? DEFAULT_PRESET_NAME
+        : (presetNames[0] || "");
       return {
         ...state,
         trunkMaps,
         boxPresets,
         trunkMap: trunkMaps.length ? trunkMaps[trunkMaps.length - 1] : "",
-        boxPresetName: firstPresetName,
-        boxesText: JSON.stringify(boxPresets[firstPresetName] || [], null, 2),
-        boxSourceLabel: firstPresetName,
+        boxPresetName: initialPresetName,
+        boxesText: JSON.stringify(boxPresets[initialPresetName] || [], null, 2),
+        boxSourceLabel: initialPresetName,
       };
     }
     case "SET_TRUNK_MAP":
