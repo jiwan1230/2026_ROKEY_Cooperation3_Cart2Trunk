@@ -45,6 +45,8 @@ HEIGHT_WEIGHT = _m05.HEIGHT_WEIGHT
 CONTACT_WEIGHT = _m05.CONTACT_WEIGHT
 WALL_A_WEIGHT = _m05.WALL_A_WEIGHT
 WALL_BC_WEIGHT = _m05.WALL_BC_WEIGHT
+COUNT_FIRST_HEIGHT_WEIGHT = _m05.COUNT_FIRST_HEIGHT_WEIGHT
+COUNT_FIRST_FOOTPRINT_GROWTH_WEIGHT = _m05.COUNT_FIRST_FOOTPRINT_GROWTH_WEIGHT
 DEFAULT_MARGIN = _m17.MARGIN
 build_task_json = _m20.build_task_json
 
@@ -112,19 +114,58 @@ def _reconstruct_score_breakdown(plans, obstacles, trunk, entrance_preference, c
     실제로 봤던 상태(그 이전까지 놓인 박스+장애물)를 그대로 재현해서
     count_touching_faces 등을 다시 계산한다 - 원본 점수를 따로 캐시하지 않고
     재계산하는 이유는 05_candidate_scoring.py를 전혀 수정하지 않고 이미
-    공개된 building block만으로 점수를 "설명"하기 위함."""
+    공개된 building block만으로 점수를 "설명"하기 위함.
+
+    ⚠️ mode="count_first"는 두 가지 서로 다른 채점 공식 중 하나를 실제로
+    쓴다 (09_rescan_replan.replan_after_rescan의 best-of-two 로직):
+      - "작은 것부터" 전략이 채택되면 score_count_first(밀도/공간재사용
+        기반, height_term + footprint_growth_term)
+      - "큰 것부터" 전략이 채택되면(=large_first와 동일 공식) 기존
+        height/contact/wall_a/wall_bc 가중 공식
+    09가 어느 쪽이 채택됐는지 별도로 알려주지 않고(algorism/ 파일은
+    이번 프로젝트 전체에서 수정 금지라 반환값을 늘릴 수도 없다), 대신
+    두 공식을 전부 재계산해서 실제 p.score와 더 가깝게 일치하는 쪽을
+    채택한다 - 두 공식은 스케일이 확연히 달라(FOOTPRINT_GROWTH_WEIGHT=5.0)
+    거의 항상 명확하게 구분된다. 반환 dict에는 실제로 어느 공식이었는지
+    "formula" 키로 표시한다."""
     placed_so_far = list(obstacles)
     breakdown_by_box_id = {}
     for p in plans:
         box = Box(id=p.box_id, width=p.dimensions[0], depth=p.dimensions[1], height=p.dimensions[2])
         x, y, z = p.position
         touches = count_touching_faces(x, y, z, box, trunk, placed_so_far)
-        breakdown_by_box_id[p.box_id] = {
-            "height_term": HEIGHT_WEIGHT * height_preference * (z / trunk.height),
-            "contact_term": CONTACT_WEIGHT * contact_preference * (touches / 6),
-            "wall_a_term": WALL_A_WEIGHT * entrance_preference * entrance_distance_ratio(x, box, trunk),
-            "wall_bc_term": WALL_BC_WEIGHT * (1 - side_wall_distance_ratio(y, box, trunk)),
-        }
+
+        height_term = HEIGHT_WEIGHT * height_preference * (z / trunk.height)
+        contact_term = CONTACT_WEIGHT * contact_preference * (touches / 6)
+        wall_a_term = WALL_A_WEIGHT * entrance_preference * entrance_distance_ratio(x, box, trunk)
+        wall_bc_term = WALL_BC_WEIGHT * (1 - side_wall_distance_ratio(y, box, trunk))
+        weighted_score = height_term - contact_term - wall_a_term - wall_bc_term
+
+        if placed_so_far:
+            used_max_x = max(pb.x_range[1] for pb in placed_so_far)
+            used_max_y = max(pb.y_range[1] for pb in placed_so_far)
+        else:
+            used_max_x = used_max_y = 0.0
+        growth_x = max(0.0, (x + box.width) - used_max_x)
+        growth_y = max(0.0, (y + box.depth) - used_max_y)
+        footprint_growth_term = COUNT_FIRST_FOOTPRINT_GROWTH_WEIGHT * (growth_x + growth_y)
+        count_first_height_term = COUNT_FIRST_HEIGHT_WEIGHT * (z / trunk.height)
+        count_first_score = count_first_height_term + footprint_growth_term
+
+        if abs(count_first_score - p.score) < abs(weighted_score - p.score):
+            breakdown_by_box_id[p.box_id] = {
+                "formula": "count_first_density",
+                "height_term": count_first_height_term,
+                "footprint_growth_term": footprint_growth_term,
+            }
+        else:
+            breakdown_by_box_id[p.box_id] = {
+                "formula": "weighted",
+                "height_term": height_term,
+                "contact_term": contact_term,
+                "wall_a_term": wall_a_term,
+                "wall_bc_term": wall_bc_term,
+            }
         placed_so_far.append(PlacedBox(box=box, x=x, y=y, z=z))
     return breakdown_by_box_id
 
