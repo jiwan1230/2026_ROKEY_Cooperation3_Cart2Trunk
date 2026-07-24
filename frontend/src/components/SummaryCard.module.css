@@ -1,0 +1,4 @@
+/* src/components/SummaryCard.module.css */
+.card { background: var(--color-surface); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 6px; }
+.row { display: flex; justify-content: space-between; font-size: 13px; }
+.status { margin-top: 8px; font-size: 12px; color: var(--color-text-secondary); }
