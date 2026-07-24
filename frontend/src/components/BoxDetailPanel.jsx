@@ -32,21 +32,17 @@ export default function BoxDetailPanel() {
               공식 중 하나를 실제로 쓸 수 있어서(백엔드 algorism_bridge.compute_plan()
               참고), 두 형태를 분기해서 보여준다. */}
           {selected.score_breakdown.formula === "count_first_density" ? (
-            <table className={styles.table}>
-              <tbody>
-                <tr><td>높이 항(불리)</td><td>{selected.score_breakdown.height_term.toFixed(3)}</td></tr>
-                <tr><td>새 영역 확장 항(불리)</td><td>{selected.score_breakdown.footprint_growth_term.toFixed(3)}</td></tr>
-              </tbody>
-            </table>
+            <div className={styles.breakdown}>
+              <div className={styles.breakdownRow}><span>높이 항(불리)</span><span>{selected.score_breakdown.height_term.toFixed(3)}</span></div>
+              <div className={styles.breakdownRow}><span>새 영역 확장 항(불리)</span><span>{selected.score_breakdown.footprint_growth_term.toFixed(3)}</span></div>
+            </div>
           ) : (
-            <table className={styles.table}>
-              <tbody>
-                <tr><td>높이 항(불리)</td><td>{selected.score_breakdown.height_term.toFixed(3)}</td></tr>
-                <tr><td>접촉면 항(유리)</td><td>-{selected.score_breakdown.contact_term.toFixed(3)}</td></tr>
-                <tr><td>안쪽 벽(A) 항(유리)</td><td>-{selected.score_breakdown.wall_a_term.toFixed(3)}</td></tr>
-                <tr><td>측면 벽(B/C) 항(유리)</td><td>-{selected.score_breakdown.wall_bc_term.toFixed(3)}</td></tr>
-              </tbody>
-            </table>
+            <div className={styles.breakdown}>
+              <div className={styles.breakdownRow}><span>높이 항(불리)</span><span>{selected.score_breakdown.height_term.toFixed(3)}</span></div>
+              <div className={styles.breakdownRow}><span>접촉면 항(유리)</span><span>-{selected.score_breakdown.contact_term.toFixed(3)}</span></div>
+              <div className={styles.breakdownRow}><span>안쪽 벽(A) 항(유리)</span><span>-{selected.score_breakdown.wall_a_term.toFixed(3)}</span></div>
+              <div className={styles.breakdownRow}><span>측면 벽(B/C) 항(유리)</span><span>-{selected.score_breakdown.wall_bc_term.toFixed(3)}</span></div>
+            </div>
           )}
         </div>
       ) : (

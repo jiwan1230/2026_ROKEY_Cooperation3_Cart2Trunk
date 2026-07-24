@@ -46,6 +46,10 @@ export default function Scene3DViewer() {
   const state = usePlannerState();
   const controlsRef = useRef(null);
   const [preset, setPreset] = useState("front");
+  // tkinter GUI의 Before/After 정적 이미지 대신, 같은 3D 씬을 그대로 두고
+  // "적재된 박스를 보여줄지"만 토글한다 - Before는 트렁크(+ 장애물)만 빈
+  // 상태로 보여준다(카트 박스는 적재 전엔 트렁크 안 실제 좌표가 없으므로).
+  const [stage, setStage] = useState("after"); // "before" | "after"
 
   useEffect(() => {
     const controls = controlsRef.current;
@@ -57,13 +61,28 @@ export default function Scene3DViewer() {
   }, [preset]);
 
   const trunk = state.result?.trunk;
+  const showPlaced = stage === "after";
 
   return (
     <div className={styles.wrapper}>
-      <div className={styles.presetBar}>
-        {Object.keys(CAMERA_PRESETS).map((name) => (
-          <button key={name} type="button" onClick={() => setPreset(name)}>{name}</button>
-        ))}
+      <div className={styles.toolbar}>
+        <div className={styles.stageBar}>
+          {[["before", "Before"], ["after", "After"]].map(([value, text]) => (
+            <button
+              key={value}
+              type="button"
+              className={stage === value ? styles.stageActive : styles.stage}
+              onClick={() => setStage(value)}
+            >
+              {text}
+            </button>
+          ))}
+        </div>
+        <div className={styles.presetBar}>
+          {Object.keys(CAMERA_PRESETS).map((name) => (
+            <button key={name} type="button" onClick={() => setPreset(name)}>{name}</button>
+          ))}
+        </div>
       </div>
       <Canvas camera={{ position: CAMERA_PRESETS.front.position, fov: 50 }}>
         <ambientLight intensity={0.7} />
@@ -74,7 +93,7 @@ export default function Scene3DViewer() {
           <SceneBoxMesh key={o.id} position={[o.x, o.y, o.z]}
                         dimensions={[o.width, o.depth, o.height]} color="#7f8c8d" />
         ))}
-        {state.result?.placed?.map((p) => (
+        {showPlaced && state.result?.placed?.map((p) => (
           <SceneBoxMesh key={p.box_id} position={p.position} dimensions={p.dimensions}
                         color={p.color} dashed={p.position[2] > 1e-6} />
         ))}

@@ -1,4 +1,8 @@
 /* src/components/SummaryCard.module.css */
 .card { background: var(--color-surface); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 6px; }
-.row { display: flex; justify-content: space-between; font-size: 13px; }
+/* space-between을 쓰면 카드가 넓을 때 라벨과 값이 카드 양 끝까지 떨어져서
+   가독성이 떨어진다는 사용자 피드백 - 컨테이너 너비와 무관하게 라벨/값
+   사이 간격이 일정하도록 flex-start + 고정 gap으로 바꿈. */
+.row { display: flex; align-items: baseline; justify-content: flex-start; gap: 16px; font-size: 13px; }
+.row span { min-width: 90px; }
 .status { margin-top: 8px; font-size: 12px; color: var(--color-text-secondary); }
