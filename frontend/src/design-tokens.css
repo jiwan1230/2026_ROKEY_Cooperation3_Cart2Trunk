@@ -1,0 +1,25 @@
+/* src/design-tokens.css - planner_gui.py의 Palette/Font를 그대로 옮김 */
+:root {
+  --color-canvas: #F5F5F7;
+  --color-surface: #FFFFFF;
+  --color-border: #E5E5EA;
+  --color-text-primary: #1D1D1F;
+  --color-text-secondary: #6E6E73;
+  --color-accent: #007AFF;
+  --color-accent-pressed: #0060DF;
+  --color-segment-bg: #E9E9EB;
+  --color-success: #34C759;
+  --color-danger: #FF3B30;
+
+  --font-family: "Noto Sans CJK KR", "Pretendard", sans-serif;
+  --font-mono: "monospace";
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-text-primary);
+  font-family: var(--font-family);
+}
