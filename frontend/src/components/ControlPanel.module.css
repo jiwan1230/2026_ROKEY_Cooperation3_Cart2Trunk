@@ -1,0 +1,53 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 20px;
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
+  overflow-y: auto;
+}
+
+.section { display: flex; flex-direction: column; gap: 8px; }
+
+.label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+}
+
+.select, .input, .boxEditor {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: var(--font-family);
+  font-size: 13px;
+  background: var(--color-canvas);
+}
+
+.boxEditor { font-family: var(--font-mono); font-size: 12px; }
+
+.fieldRow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.fieldLabel { font-size: 12px; color: var(--color-text-primary); flex: 1; }
+
+.segmented { display: flex; background: var(--color-segment-bg); border-radius: 10px; padding: 3px; }
+.segment, .segmentActive {
+  flex: 1; border: none; background: transparent; padding: 8px 0; border-radius: 8px;
+  font-weight: 600; font-size: 12px; cursor: pointer;
+}
+.segmentActive { background: var(--color-accent); color: white; }
+
+.toggleRow { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.actions button {
+  flex: 1; min-width: 100px; padding: 10px; border-radius: 8px; border: none;
+  background: var(--color-accent); color: white; font-weight: 700; cursor: pointer;
+}
+.actions button:disabled { background: var(--color-segment-bg); color: var(--color-text-secondary); cursor: not-allowed; }
+
+.errorBox {
+  background: #FFF1F0; border: 1px solid var(--color-danger); border-radius: 8px;
+  padding: 10px; font-size: 12px; color: var(--color-danger);
+}
