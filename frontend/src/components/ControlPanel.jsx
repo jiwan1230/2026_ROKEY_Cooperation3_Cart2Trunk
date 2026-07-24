@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { usePlannerDispatch, usePlannerState } from "../state/PlannerContext.jsx";
 import { postApprove, postSend } from "../api/client.js";
 import styles from "./ControlPanel.module.css";
@@ -32,6 +33,9 @@ const PREFERENCE_FIELDS = [
 export default function ControlPanel() {
   const state = usePlannerState();
   const dispatch = usePlannerDispatch();
+  // 무작위 생성 개수는 계산에 쓰이는 파라미터가 아니라(생성 시점에만 쓰는
+  // 입력값) 전역 리듀서가 아닌 이 컴포넌트 로컬 상태로 둔다.
+  const [randomBoxCount, setRandomBoxCount] = useState(6);
 
   const setParam = (key, value) => dispatch({ type: "SET_PARAM", payload: { key, value } });
 
@@ -176,11 +180,24 @@ export default function ControlPanel() {
 
       <section className={styles.section}>
         <label className={styles.label}>박스 목록 (JSON)</label>
-        <div className={styles.fieldRow}>
+        <div className={styles.generateRow}>
+          <input
+            type="number"
+            min={1}
+            max={50}
+            className={styles.boxCountInput}
+            disabled={locked}
+            value={randomBoxCount}
+            data-testid="box-count-input"
+            onChange={(e) => {
+              const n = Math.round(Number(e.target.value));
+              setRandomBoxCount(Number.isFinite(n) ? Math.min(50, Math.max(1, n)) : 1);
+            }}
+          />
           <button type="button" disabled={locked} onClick={() => dispatch({
-            type: "GENERATE_RANDOM_BOXES", payload: generateRandomBoxes(6),
+            type: "GENERATE_RANDOM_BOXES", payload: generateRandomBoxes(randomBoxCount),
           })}>
-            무작위 6개 생성
+            무작위 {randomBoxCount}개 생성
           </button>
         </div>
         <textarea
