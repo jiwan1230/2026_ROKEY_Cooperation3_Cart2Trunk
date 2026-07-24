@@ -15,6 +15,13 @@ def create_app():
     from routes.resources import resources_bp
     app.register_blueprint(resources_bp)
 
+    from routes.plan import plan_bp, ApiError
+    app.register_blueprint(plan_bp)
+
+    @app.errorhandler(ApiError)
+    def handle_api_error(err):
+        return err.to_response()
+
     @app.get("/api/health")
     def health():
         return jsonify({"status": "ok"})
