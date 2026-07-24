@@ -38,10 +38,30 @@ export default function ControlPanel() {
   const handleApprove = async () => {
     if (state.planState !== "COMPUTED" || !state.result) return;
     try {
+      // 승인 시 감사 기록에 남는 parameters는 useDebouncedPlan.js가
+      // postPlan()에 실제로 보낸 요청 바디와 형식이 같아야 한다(snake_case
+      // 키 이름 + 마진 필드 ""→null + Number() 변환). state.params를 그대로
+      // 넘기면 camelCase/빈 문자열 그대로라 실제 계산에 쓰인 값과 형식이
+      // 어긋난다.
+      const { params } = state;
+      const approvedParameters = {
+        mode: params.mode,
+        margin: params.margin === "" ? null : Number(params.margin),
+        wall_margin: params.wallMargin === "" ? null : Number(params.wallMargin),
+        obstacle_margin: params.obstacleMargin === "" ? null : Number(params.obstacleMargin),
+        ceiling_margin: params.ceilingMargin === "" ? null : Number(params.ceilingMargin),
+        entrance_margin: params.entranceMargin === "" ? null : Number(params.entranceMargin),
+        entrance_preference: params.entrancePreference,
+        contact_preference: params.contactPreference,
+        height_preference: params.heightPreference,
+        allow_stacking: params.allowStacking,
+        allow_rotation: params.allowRotation,
+        fixed_order: params.fixedOrder,
+      };
       const resp = await postApprove({
         box_snapshot_id: state.result.box_snapshot_id,
         trunk_map_id: state.result.trunk_map_id,
-        parameters: state.params,
+        parameters: approvedParameters,
         placed: state.result.placed,
       });
       dispatch({ type: "APPROVE_SUCCESS", payload: resp });

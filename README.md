@@ -27,7 +27,7 @@ npm run dev
 
 ```bash
 # 백엔드
-cd isaacpjt/Cart2Trunk/web/backend && source venv/bin/activate && python -m pytest -v
+cd isaacpjt/Cart2Trunk/web/backend && source venv/bin/activate && PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -v
 
 # 프론트엔드
 cd isaacpjt/Cart2Trunk/web/frontend && npm test

@@ -70,11 +70,11 @@ export default function Scene3DViewer() {
         <directionalLight position={[3, 5, 3]} intensity={0.6} />
         <OrbitControls ref={controlsRef} />
         {trunk && <TrunkWireframe trunk={trunk} />}
-        {state.result?.obstacles.map((o) => (
+        {state.result?.obstacles?.map((o) => (
           <SceneBoxMesh key={o.id} position={[o.x, o.y, o.z]}
                         dimensions={[o.width, o.depth, o.height]} color="#7f8c8d" />
         ))}
-        {state.result?.placed.map((p) => (
+        {state.result?.placed?.map((p) => (
           <SceneBoxMesh key={p.box_id} position={p.position} dimensions={p.dimensions}
                         color={p.color} dashed={p.position[2] > 1e-6} />
         ))}

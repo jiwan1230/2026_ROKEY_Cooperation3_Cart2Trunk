@@ -15,6 +15,7 @@ plan_from_trunk_map_data()/_color_for_box_id()/_send_task_to_msi2() 같은
 import json
 import sys
 import pathlib
+import zlib
 from importlib import import_module
 from typing import Dict, List, Optional
 
@@ -65,7 +66,11 @@ _DEFAULT_CART_BOXES = [
 
 
 def color_for_box_id(box_id: str) -> str:
-    return _BOX_COLOR_PALETTE[hash(box_id) % len(_BOX_COLOR_PALETTE)]
+    # 파이썬 내장 hash()는 PYTHONHASHSEED에 따라 프로세스마다 값이 달라져서
+    # 같은 box_id라도 백엔드를 재시작하면 다른 색으로 렌더링된다. zlib.crc32는
+    # 입력 바이트에만 의존하는 결정적 해시라 프로세스가 바뀌어도 항상 같은
+    # 색을 반환한다.
+    return _BOX_COLOR_PALETTE[zlib.crc32(box_id.encode()) % len(_BOX_COLOR_PALETTE)]
 
 
 def list_trunk_maps() -> List[str]:
