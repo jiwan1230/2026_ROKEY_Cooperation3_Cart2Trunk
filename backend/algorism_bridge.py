@@ -254,3 +254,39 @@ def compute_plan(
         "trunk_map_id": trunk_map_data.get("run_id", "?"),
         "box_snapshot_id": f"manual_input:{box_source_label}",
     }
+
+
+def build_approved_task(plan_id: str, box_snapshot_id: str, trunk_map_id: str,
+                         parameters: dict, placed: List[dict]) -> dict:
+    """승인 단계 - 20_task_export.build_task_json을 그대로 쓰기 위해,
+    프론트가 보낸 placed(POST /api/plan 응답의 placed 배열 그대로)를
+    잠깐 PlacementPlan 객체로 복원한다."""
+    _m07 = import_module("07_placement_plan")
+    PlacementPlan = _m07.PlacementPlan
+
+    plans = [
+        PlacementPlan(
+            box_id=p["box_id"], order=p["order"], position=tuple(p["position"]),
+            dimensions=tuple(p["dimensions"]), score=p["score"], touches=p["touches"],
+            rotated=p["rotated"], target_yaw=p["target_yaw"],
+        )
+        for p in placed
+    ]
+    return build_task_json(
+        plan_id=plan_id, box_snapshot_id=box_snapshot_id, trunk_map_id=trunk_map_id,
+        parameters=parameters, plans=plans, approved=True,
+    )
+
+
+def send_task(task_json: dict) -> str:
+    """trunk_map_planner_node._send_task_to_msi2()와 동일한 로직(승인 전
+    전송 금지 원칙 포함) - rclpy 의존성 없이 이 파일 안에서 재구현했다
+    (이유는 이 파일 최상단 docstring 참고). 실제 MSI2 전송 경로가 정해지기
+    전까지는 그쪽과 똑같이 로컬 파일로만 저장한다."""
+    if not task_json.get("approved", False):
+        raise ValueError("approved=False인 Task는 MSI2로 보낼 수 없음 (승인 전 전달 금지 원칙)")
+
+    _PENDING_TASKS_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = _PENDING_TASKS_DIR / f"{task_json['plan_id']}.json"
+    out_path.write_text(json.dumps(task_json, ensure_ascii=False, indent=2))
+    return str(out_path)
