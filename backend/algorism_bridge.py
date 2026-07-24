@@ -16,7 +16,7 @@ import json
 import sys
 import pathlib
 from importlib import import_module
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 _HERE = pathlib.Path(__file__).resolve().parent
 _CART2TRUNK_DIR = _HERE.parent.parent
@@ -105,3 +105,111 @@ def generate_random_boxes(count: int) -> List[dict]:
             "height": round(rng.uniform(0.10, 0.30), 2),
         })
     return boxes
+
+
+def _reconstruct_score_breakdown(plans, obstacles, trunk, entrance_preference, contact_preference, height_preference):
+    """plans는 order로 정렬돼 있다고 가정. place_one_box가 매 박스를 놓을 때
+    실제로 봤던 상태(그 이전까지 놓인 박스+장애물)를 그대로 재현해서
+    count_touching_faces 등을 다시 계산한다 - 원본 점수를 따로 캐시하지 않고
+    재계산하는 이유는 05_candidate_scoring.py를 전혀 수정하지 않고 이미
+    공개된 building block만으로 점수를 "설명"하기 위함."""
+    placed_so_far = list(obstacles)
+    breakdown_by_box_id = {}
+    for p in plans:
+        box = Box(id=p.box_id, width=p.dimensions[0], depth=p.dimensions[1], height=p.dimensions[2])
+        x, y, z = p.position
+        touches = count_touching_faces(x, y, z, box, trunk, placed_so_far)
+        breakdown_by_box_id[p.box_id] = {
+            "height_term": HEIGHT_WEIGHT * height_preference * (z / trunk.height),
+            "contact_term": CONTACT_WEIGHT * contact_preference * (touches / 6),
+            "wall_a_term": WALL_A_WEIGHT * entrance_preference * entrance_distance_ratio(x, box, trunk),
+            "wall_bc_term": WALL_BC_WEIGHT * (1 - side_wall_distance_ratio(y, box, trunk)),
+        }
+        placed_so_far.append(PlacedBox(box=box, x=x, y=y, z=z))
+    return breakdown_by_box_id
+
+
+def compute_plan(
+    trunk_map_data: dict, boxes_raw: List[dict], box_source_label: str = "custom",
+    mode: str = "large_first", margin: Optional[float] = None,
+    allow_stacking: bool = False, allow_rotation: bool = True,
+    wall_margin: Optional[float] = None, obstacle_margin: Optional[float] = None,
+    ceiling_margin: Optional[float] = None, entrance_margin: Optional[float] = None,
+    entrance_preference: float = 1.0, contact_preference: float = 1.0, height_preference: float = 1.0,
+    fixed_order: bool = False,
+) -> dict:
+    """POST /api/plan 하나가 필요로 하는 전체 응답 payload를 만든다.
+    trunk_map_planner_node.plan_from_trunk_map_data()와 같은 순서로 02의
+    파서를 직접 호출한다 (그 함수 자체를 import하지 않는 이유는 이 파일
+    최상단 docstring 참고)."""
+    import time
+
+    world_map = load_trunk_from_world_map(trunk_map_data)
+    trunk, offset = world_map.to_bounding_trunk()
+    obstacles = load_obstacles_from_world_map(trunk_map_data, offset)
+    cart_boxes = [Box(**b) for b in boxes_raw]
+    fixed_order_ids = [b["id"] for b in boxes_raw] if fixed_order else None
+
+    t0 = time.perf_counter()
+    plans, unloadable = replan_after_rescan(
+        cart_boxes, trunk, obstacles, mode=mode, margin=margin, allow_stacking=allow_stacking,
+        allow_rotation=allow_rotation, wall_margin=wall_margin, obstacle_margin=obstacle_margin,
+        ceiling_margin=ceiling_margin, entrance_margin=entrance_margin,
+        entrance_preference=entrance_preference, contact_preference=contact_preference,
+        height_preference=height_preference, fixed_order=fixed_order_ids,
+    )
+    calc_time_ms = (time.perf_counter() - t0) * 1000
+
+    plans_by_order = sorted(plans, key=lambda p: p.order)
+    breakdown = _reconstruct_score_breakdown(
+        plans_by_order, obstacles, trunk, entrance_preference, contact_preference, height_preference)
+
+    effective_margin = margin if margin is not None else DEFAULT_MARGIN
+    placed_volume = sum(p.dimensions[0] * p.dimensions[1] * p.dimensions[2] for p in plans)
+    trunk_volume = trunk.width * trunk.depth * trunk.height
+    utilization_pct = (placed_volume / trunk_volume * 100) if trunk_volume > 1e-9 else 0.0
+    avg_score = (sum(p.score for p in plans) / len(plans)) if plans else 0.0
+
+    log_lines = [
+        f"[{trunk_map_data.get('run_id', '?')}] mode={mode}, margin={effective_margin:.2f}m, "
+        f"쌓기={'허용' if allow_stacking else '1층전용'}, 회전={'허용' if allow_rotation else '비허용'}, "
+        f"입구/깊이축={entrance_preference:+.1f}, 접촉면가중치={contact_preference:.1f}, "
+        f"바닥우선강도={height_preference:.1f}, 순서고정={'예' if fixed_order_ids else '아니오'} "
+        f"-> {len(plans)}/{len(boxes_raw)}개 배치"
+    ]
+    for p in plans_by_order:
+        log_lines.append(
+            f"  PLACED {p.box_id}: pos=({p.position[0]:.2f},{p.position[1]:.2f},{p.position[2]:.2f}) "
+            f"rotated={p.rotated}"
+        )
+    for u in unloadable:
+        log_lines.append(f"  UNLOADABLE {u.box_id}: {u.reason.value}")
+
+    return {
+        "trunk": {"width": trunk.width, "depth": trunk.depth, "height": trunk.height},
+        "obstacles": [
+            {"id": o.box.id, "x": o.x, "y": o.y, "z": o.z,
+             "width": o.box.width, "depth": o.box.depth, "height": o.box.height}
+            for o in obstacles
+        ],
+        "placed": [
+            {
+                "box_id": p.box_id, "order": p.order, "position": list(p.position),
+                "dimensions": list(p.dimensions), "rotated": p.rotated, "target_yaw": p.target_yaw,
+                "score": p.score, "touches": p.touches, "color": color_for_box_id(p.box_id),
+                "score_breakdown": breakdown[p.box_id],
+            }
+            for p in plans_by_order
+        ],
+        "unloadable": [
+            {"box_id": u.box_id, "reason": u.reason.value, "detail": u.detail}
+            for u in unloadable
+        ],
+        "summary": {
+            "total": len(boxes_raw), "placed": len(plans), "unplaced": len(unloadable),
+            "utilization_pct": utilization_pct, "calc_time_ms": calc_time_ms, "avg_score": avg_score,
+        },
+        "log_lines": log_lines,
+        "trunk_map_id": trunk_map_data.get("run_id", "?"),
+        "box_snapshot_id": f"manual_input:{box_source_label}",
+    }
