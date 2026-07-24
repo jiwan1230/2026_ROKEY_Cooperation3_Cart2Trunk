@@ -1,8 +1,31 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { usePlannerState } from "../state/PlannerContext.jsx";
+import { colorForBoxId } from "../utils/color.js";
 import styles from "./Scene3DViewer.module.css";
+
+const STAGING_GAP = 0.05; // 대기 박스끼리, 그리고 트렁크 입구 면과의 간격(m)
+const STAGING_OFFSET = 0.3; // 트렁크 입구 면에서 대기 구역까지의 거리(m) - 트렁크
+// 자체가 1m 안팎으로 작아서, 간격이 너무 좁으면(예: 0.15) 카메라 원근감 때문에
+// 대기 박스가 트렁크에 거의 붙어 보이는 착시가 생겼다(사용자 확인 후 조정).
+
+// 트렁크 입구(로봇이 접근하는 쪽) 바로 바깥에 대기 중인 박스들을 나란히
+// 줄세운다 - tkinter GUI의 Before 이미지가 로봇/카트 쪽에 대기 박스를
+// 보여주던 것과 같은 취지. 실제 카트 위 배치 좌표는 모르므로(그런 데이터
+// 자체가 없음) 각 박스를 자기 크기 그대로, 서로 겹치지 않게 y축을 따라
+// 줄세우는 것으로 근사한다.
+export function layoutStagingBoxes(boxSpecs, trunk) {
+  if (!trunk || boxSpecs.length === 0) return [];
+  const entranceNearX = trunk.entrance_near_x !== false;
+  let cursorY = 0;
+  return boxSpecs.map((b) => {
+    const x = entranceNearX ? -(STAGING_OFFSET + b.width) : trunk.width + STAGING_OFFSET;
+    const y = cursorY;
+    cursorY += b.depth + STAGING_GAP;
+    return { id: b.id, position: [x, y, 0], dimensions: [b.width, b.depth, b.height] };
+  });
+}
 
 // 우리 좌표계(x=width, y=depth, z=height, (0,0,0) 코너 기준)를 three.js의
 // y-up 좌표계로 옮긴다: three.x=our.x, three.y=our.z(높이), three.z=our.y(깊이).
@@ -37,7 +60,11 @@ function SceneBoxMesh({ position, dimensions, color, dashed }) {
 }
 
 const CAMERA_PRESETS = {
-  front: { position: [3, 1.5, 0.01], target: [0, 0, 0] },
+  // "front"은 완전한 정면(x축 일직선)이 아니라 살짝 대각선 위에서 내려다보는
+  // 각도로 잡는다 - 완전 정면이면 트렁크 입구 밖에 대기 중인 박스(음수 x
+  // 쪽)가 트렁크 자체에 정확히 가려져서 안 보이는 문제가 있었다(사용자
+  // 피드백으로 발견).
+  front: { position: [0.3, 1.8, 3.2], target: [0.1, 0, 0.4] },
   side: { position: [0.01, 1.5, 3], target: [0, 0, 0] },
   top: { position: [0.01, 4, 0.01], target: [0, 0, 0] },
 };
@@ -62,6 +89,32 @@ export default function Scene3DViewer() {
 
   const trunk = state.result?.trunk;
   const showPlaced = stage === "after";
+
+  // 입력 박스 목록(state.boxesText)을 대기 박스 크기 조회용으로 파싱한다 -
+  // 타이핑 도중이라 문법이 깨져 있을 수 있으므로 실패하면 조용히 빈 배열로
+  // 취급한다(useDebouncedPlan.js와 같은 방어 방식).
+  const inputBoxes = useMemo(() => {
+    try {
+      const parsed = JSON.parse(state.boxesText);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }, [state.boxesText]);
+
+  // Before: 아직 계산 전이므로 카트의 모든 박스가 대기 중.
+  // After: 이미 실린 박스는 실제 위치에 놓이므로, 대기 구역에는 못 실은
+  // (unloadable) 박스만 남긴다 - tkinter GUI의 Before/After 이미지와 같은 관례.
+  const waitingBoxSpecs = useMemo(() => {
+    if (stage === "before") return inputBoxes;
+    if (!state.result) return [];
+    const boxById = Object.fromEntries(inputBoxes.map((b) => [b.id, b]));
+    return (state.result.unloadable || [])
+      .map((u) => boxById[u.box_id])
+      .filter(Boolean);
+  }, [stage, inputBoxes, state.result]);
+
+  const stagedBoxes = useMemo(() => layoutStagingBoxes(waitingBoxSpecs, trunk), [waitingBoxSpecs, trunk]);
 
   return (
     <div className={styles.wrapper}>
@@ -95,7 +148,11 @@ export default function Scene3DViewer() {
         ))}
         {showPlaced && state.result?.placed?.map((p) => (
           <SceneBoxMesh key={p.box_id} position={p.position} dimensions={p.dimensions}
-                        color={p.color} dashed={p.position[2] > 1e-6} />
+                        color={colorForBoxId(p.box_id)} dashed={p.position[2] > 1e-6} />
+        ))}
+        {stagedBoxes.map((b) => (
+          <SceneBoxMesh key={b.id} position={b.position} dimensions={b.dimensions}
+                        color={colorForBoxId(b.id)} />
         ))}
       </Canvas>
     </div>

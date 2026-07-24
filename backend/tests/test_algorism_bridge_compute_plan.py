@@ -22,7 +22,7 @@ def test_compute_plan_places_boxes_and_returns_full_payload():
 
     result = bridge.compute_plan(_TRUNK_MAP, boxes, box_source_label="테스트")
 
-    assert result["trunk"] == {"width": 1.0, "depth": 1.0, "height": 0.5}
+    assert result["trunk"] == {"width": 1.0, "depth": 1.0, "height": 0.5, "entrance_near_x": True}
     assert len(result["placed"]) == 1
     placed = result["placed"][0]
     assert placed["box_id"] == "A"

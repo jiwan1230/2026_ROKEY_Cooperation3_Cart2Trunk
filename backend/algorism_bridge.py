@@ -12,6 +12,7 @@ plan_from_trunk_map_data()/_color_for_box_id()/_send_task_to_msi2() 같은
 소규모 글루 코드만 그대로 옮겨왔고, 그 함수들이 호출하는 실제 알고리즘
 (02/03/05/09/17/20)은 한 줄도 재구현하지 않았다.
 """
+import colorsys
 import json
 import sys
 import pathlib
@@ -56,8 +57,6 @@ build_task_json = _m20.build_task_json
 _SRC_DIR = pathlib.Path("/home/sunwook/cobot3_ws/src")
 _PENDING_TASKS_DIR = _ALGORISM_DIR / "local_test_data" / "pending_tasks"
 
-_BOX_COLOR_PALETTE = ["#3498db", "#e67e22", "#2ecc71", "#9b59b6", "#e74c3c", "#1abc9c", "#f1c40f"]
-
 _DEFAULT_CART_BOXES = [
     {"id": "Large", "width": 0.50, "depth": 0.35, "height": 0.30},
     {"id": "Medium", "width": 0.40, "depth": 0.30, "height": 0.25},
@@ -66,11 +65,27 @@ _DEFAULT_CART_BOXES = [
 
 
 def color_for_box_id(box_id: str) -> str:
-    # 파이썬 내장 hash()는 PYTHONHASHSEED에 따라 프로세스마다 값이 달라져서
-    # 같은 box_id라도 백엔드를 재시작하면 다른 색으로 렌더링된다. zlib.crc32는
-    # 입력 바이트에만 의존하는 결정적 해시라 프로세스가 바뀌어도 항상 같은
-    # 색을 반환한다.
-    return _BOX_COLOR_PALETTE[zlib.crc32(box_id.encode()) % len(_BOX_COLOR_PALETTE)]
+    """box_id 하나당 색 하나를 결정적으로 만든다. 고정된 몇 개짜리 팔레트에서
+    고르면(이전 버전) 박스가 팔레트 크기(예: 7개)보다 많아지는 순간 색이
+    겹치기 시작한다 - 3D 뷰의 "대기 중" 박스까지 합치면 쉽게 넘어간다(사용자
+    피드백). 대신 hue(색상)를 0~360 전체에서 뽑아 훨씬 넓은 범위에서
+    구분되게 하고, 혹시 hue가 우연히 가까워도(360가지 중 겹침) 채도/명도를
+    같이 흔들어 눈으로 봤을 때 더 구분되게 한다.
+
+    zlib.crc32는 프로세스마다 값이 바뀌는 파이썬 내장 hash()와 달리 입력
+    바이트에만 의존하는 결정적 해시라, 백엔드를 재시작해도 같은 box_id는
+    항상 같은 색을 유지한다.
+
+    ⚠️ 프론트엔드(web/frontend/src/utils/color.js)가 "대기 중"(아직 계산
+    전) 박스에도 같은 알고리즘을 JS로 옮겨서 쓴다 - Before/After를 오갈 때
+    같은 박스가 같은 색을 유지하려면 그쪽과 이 함수의 계산 방식이 맞아야
+    한다. 이 함수를 고치면 그쪽도 같이 고쳐야 함."""
+    h = zlib.crc32(box_id.encode())
+    hue = h % 360
+    sat = 55 + (h // 360) % 20      # 55~74%
+    light = 45 + (h // 7200) % 20   # 45~64%
+    r, g, b = colorsys.hls_to_rgb(hue / 360, light / 100, sat / 100)
+    return "#{:02x}{:02x}{:02x}".format(round(r * 255), round(g * 255), round(b * 255))
 
 
 def list_trunk_maps() -> List[str]:
@@ -232,7 +247,10 @@ def compute_plan(
         log_lines.append(f"  UNLOADABLE {u.box_id}: {u.reason.value}")
 
     return {
-        "trunk": {"width": trunk.width, "depth": trunk.depth, "height": trunk.height},
+        "trunk": {
+            "width": trunk.width, "depth": trunk.depth, "height": trunk.height,
+            "entrance_near_x": trunk.entrance_near_x,
+        },
         "obstacles": [
             {"id": o.box.id, "x": o.x, "y": o.y, "z": o.z,
              "width": o.box.width, "depth": o.box.depth, "height": o.box.height}

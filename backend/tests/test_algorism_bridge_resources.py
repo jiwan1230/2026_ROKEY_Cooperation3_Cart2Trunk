@@ -36,6 +36,21 @@ def test_color_for_box_id_is_stable():
     assert bridge.color_for_box_id("Large") == bridge.color_for_box_id("Large")
 
 
+def test_color_for_box_id_returns_valid_hex_color():
+    color = bridge.color_for_box_id("Box1")
+    assert len(color) == 7 and color.startswith("#")
+    int(color[1:], 16)  # 유효한 16진수여야 함 (예외 안 나면 통과)
+
+
+def test_color_for_box_id_spreads_many_ids_across_distinct_hues():
+    # 팔레트가 7개짜리로 고정돼 있던 예전 버전은 박스가 7개를 넘으면 색이
+    # 반드시 겹쳤다 - 지금은 hue를 0~360 전체에서 뽑으므로, 실전에서 흔한
+    # 규모(예: 20개)의 박스 id에서는 대부분 서로 다른 색이 나와야 한다.
+    ids = [f"Box{i}" for i in range(20)]
+    colors = {bridge.color_for_box_id(i) for i in ids}
+    assert len(colors) >= 15  # 완전한 유일성은 보장 안 하지만(hue 충돌 가능) 대부분은 달라야 함
+
+
 def test_generate_random_boxes_count_and_ranges():
     boxes = bridge.generate_random_boxes(5)
     assert len(boxes) == 5
