@@ -1,0 +1,4 @@
+/* src/App.module.css */
+.layout { display: flex; flex-direction: column; height: 100vh; }
+.body { display: grid; grid-template-columns: 340px 1fr; flex: 1; overflow: hidden; }
+.resultArea { display: flex; flex-direction: column; gap: 16px; padding: 20px; overflow-y: auto; }
