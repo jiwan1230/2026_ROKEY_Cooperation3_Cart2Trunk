@@ -28,11 +28,12 @@ export default function BoxDetailPanel() {
             Target=({selected.position.map((v) => v.toFixed(2)).join(", ")})m ·
             Yaw={selected.target_yaw.toFixed(2)}rad
           </p>
-          <p>접촉면 {selected.touches}/6개, {selected.rotated ? "90도 회전됨" : "정자세"}, 점수 {selected.score.toFixed(3)}(낮을수록 좋은 자리)</p>
           {/* "몇 점이면 좋은 건지 기준이 없다"는 피드백 - 지금 우선순위 슬라이더
               설정에서 이 공식이 낼 수 있는 최선~최악 범위 대비 이 박스의 점수가
               어디쯤인지 등급으로 보여준다. count_first_density 공식은 이론상
-              상한이 트렁크 크기에 따라 달라져(밀도 공식) 등급 기준 대상이 아니다. */}
+              상한이 트렁크 크기에 따라 달라져(밀도 공식) 등급 기준 대상이 아니다.
+              박스를 고르자마자 바로 보이도록 맨 위쪽에 둔다(사용자 피드백으로
+              접촉면/점수 줄보다 위로 옮김). */}
           {selected.score_breakdown.formula === "weighted" ? (
             <p className={styles.gradeLine}>
               품질 등급:{" "}
@@ -46,6 +47,7 @@ export default function BoxDetailPanel() {
               품질 등급: 개수 우선 모드에서는 값의 이론적 상한이 케이스마다 달라 등급을 매기지 않습니다 - 같은 계산 안에서 다른 박스와 상대 비교로 판단하세요.
             </p>
           )}
+          <p>접촉면 {selected.touches}/6개, {selected.rotated ? "90도 회전됨" : "정자세"}, 점수 {selected.score.toFixed(3)}(낮을수록 좋은 자리)</p>
           {/* score_breakdown.formula: "count_first" 모드는 내부적으로 서로 다른 두 채점
               공식 중 하나를 실제로 쓸 수 있어서(백엔드 algorism_bridge.compute_plan()
               참고), 두 형태를 분기해서 보여준다. */}
