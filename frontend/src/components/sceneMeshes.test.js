@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeCartFootprint, layoutStagingBoxes, toThreeCenter } from "./Scene3DViewer.jsx";
+import { computeCartFootprint, layoutStagingBoxes, toThreeCenter } from "./sceneMeshes.jsx";
 
 describe("toThreeCenter", () => {
   it("maps our z-up corner coords to three.js y-up center coords", () => {
