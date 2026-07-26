@@ -24,6 +24,9 @@ def create_app():
     from routes.vision import vision_bp
     app.register_blueprint(vision_bp)
 
+    from routes.robot import robot_bp
+    app.register_blueprint(robot_bp)
+
     @app.errorhandler(ApiError)
     def handle_api_error(err):
         return err.to_response()
@@ -48,4 +51,7 @@ def create_app():
 app = create_app()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    # threaded=True: 로봇 트리거 더미 지연(1.5초) 동안 다른 요청(예: 트렁크
+    # 맵 3초 폴링)이 밀리지 않게 한다 - 순수 time.sleep 대기라 스레드 경합
+    # 위험은 없다.
+    app.run(host="0.0.0.0", port=5000, debug=True, threaded=True)
