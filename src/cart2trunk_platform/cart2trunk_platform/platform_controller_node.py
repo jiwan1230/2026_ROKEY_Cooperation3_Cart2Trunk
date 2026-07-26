@@ -124,9 +124,16 @@ from isaacsim.core.api import World
 from isaacsim.core.api.materials.physics_material import PhysicsMaterial
 from isaacsim.core.api.objects import FixedCuboid
 from isaacsim.core.prims import SingleArticulation
+from isaacsim.core.utils.extensions import enable_extension
 from isaacsim.core.utils.rotations import euler_angles_to_quat
 from isaacsim.core.utils.types import ArticulationAction
 from isaacsim.robot.manipulators.grippers.surface_gripper import SurfaceGripper
+
+# 100.py류 스캔 스크립트들과 동일 - isaacsim.ros2.bridge가 제공하는 OGN 노드
+# 타입(ROS2CameraHelper 등)은 익스텐션이 활성화돼야 omni.graph 레지스트리에
+# 등록된다. rclpy import용 sys.path/LD_LIBRARY_PATH 설정(위)과는 별개의
+# 활성화 단계 - 둘 다 있어야 카메라 ROS2 브리지가 동작한다.
+enable_extension("isaacsim.ros2.bridge")
 
 # HANDOFF_MSI2.md 2.3절 - M0609 자산(RMPflow/URDF/그리퍼 USD)은 git에 없고 PC마다
 # 로컬 경로가 다르다 - 하드코딩 대신 CART2TRUNK_M0609_DIR 환경변수로 받는다.
@@ -154,6 +161,9 @@ if str(_CART2TRUNK_SIMULATION_SRC) not in sys.path:
     sys.path.insert(0, str(_CART2TRUNK_SIMULATION_SRC))
 from cart2trunk_simulation.core.cart_scene import build_cart_with_boxes  # noqa: E402
 from cart2trunk_simulation.core.vehicle_scene import build_vehicle  # noqa: E402
+from cart2trunk_simulation.core.sensor_bridge import (  # noqa: E402
+    find_camera_prim_path, initialize_depth_camera, setup_ros2_camera_bridge,
+)
 
 import rclpy
 from rclpy.node import Node
@@ -218,6 +228,17 @@ CART_SCENE_POSITION = (1.3, 0.0, 0.0)
 CART_SCENE_ROT_Z = 90.0
 VEHICLE_SCENE_POSITION = (3.6, 0.0, 0.0)
 VEHICLE_SCENE_ROT_Z = 0.0
+
+# ---------------- cart2trunk_simulation - 실시간 Depth 카메라 ROS2 브리지 ----------------
+# 88.cart_scan_holonomic.py/89.trunk_scan_holonomic.py와 동일값 - box_scan_action_server/
+# trunk_scan_action_server가 실시간 depth_callback을 구현하게 되면(HANDOFF_2026-07-26.md
+# 2.4절) 이 토픽/frame_id를 그대로 구독하면 된다. M0609 vgp20 그리퍼에 이미 마운트된
+# RealSense 카메라(Camera_Pseudo_Depth 프림)를 그대로 쓴다 - 별도 카메라를 새로 붙이지 않음.
+DEPTH_CAMERA_NAME_HINT = "Depth"
+CAMERA_WIDTH, CAMERA_HEIGHT = 640, 480
+DEPTH_TOPIC = "/camera/depth"
+CAMERA_INFO_TOPIC = "/camera/camera_info"
+CAMERA_FRAME_ID = "m0609_depth_camera_optical_frame"
 
 # ---------------- 91.cart_pick_holonomic.py/100.py와 동일 - 그리퍼 ----------------
 EE_LINK_NAME = "link_6"
@@ -533,7 +554,8 @@ world.scene.add_default_ground_plane()
 
 cart_scene = build_cart_with_boxes(
     stage, simulation_app, CART_USD, position=CART_SCENE_POSITION, rot_z=CART_SCENE_ROT_Z)
-build_vehicle(stage, simulation_app, CAR_USD, position=VEHICLE_SCENE_POSITION, rot_z=VEHICLE_SCENE_ROT_Z)
+build_vehicle(
+    stage, simulation_app, CAR_USD, position=VEHICLE_SCENE_POSITION, rot_z=VEHICLE_SCENE_ROT_Z)
 
 chassis_path, hub_joint_paths, k_factor = build_holonomic_base(
     stage, CHASSIS_SPAWN_XY, BASE_LENGTH, BASE_WIDTH, BASE_HEIGHT)
@@ -542,6 +564,18 @@ m0609_path, m0609_base_link_path, lift_translate_op, lift_scale_op = mount_m0609
 
 for _ in range(10):
     simulation_app.update()
+
+_depth_camera_prim_path, _all_camera_candidates = find_camera_prim_path(
+    stage, m0609_path, DEPTH_CAMERA_NAME_HINT)
+if _depth_camera_prim_path is None:
+    raise RuntimeError(f"카메라 프림을 못 찾음 - 발견된 카메라 후보: {_all_camera_candidates}")
+print(f"[CAMERA] depth 카메라: {_depth_camera_prim_path} "
+      f"(후보 전체: {_all_camera_candidates})", flush=True)
+depth_camera = initialize_depth_camera(_depth_camera_prim_path, CAMERA_WIDTH, CAMERA_HEIGHT)
+setup_ros2_camera_bridge(
+    _depth_camera_prim_path, depth_topic=DEPTH_TOPIC, camera_info_topic=CAMERA_INFO_TOPIC,
+    frame_id=CAMERA_FRAME_ID, width=CAMERA_WIDTH, height=CAMERA_HEIGHT)
+print(f"[ROS2] {DEPTH_TOPIC}, {CAMERA_INFO_TOPIC} 발행 시작 (frame_id={CAMERA_FRAME_ID})", flush=True)
 
 m0609_robot = SingleArticulation(prim_path=m0609_base_link_path, name="m0609_arm")
 base_robot = SingleArticulation(prim_path=chassis_path, name="holo_base")
@@ -608,7 +642,9 @@ _TEST_TARGET_TOLERANCE_M = 0.1
 
 for _ in range(100):
     set_lift_height(lift_state["h"])
-    world.step(render=not HEADLESS)
+    # render=True 고정 - 카메라 ROS2 브리지 그래프가 이미 만들어진 뒤라(위 참고),
+    # 렌더 안 하는 스텝을 섞으면 omni.graph.image 플러그인이 크래시했다(실측 확인).
+    world.step(render=True)
 
 gripper = DynamicSuctionGripper(
     end_effector_prim_path=ee_path, gripper_body_path=gripper_body_path, tip_local_offset=TIP_LOCAL_OFFSET,
@@ -829,17 +865,15 @@ class PlatformControllerNode(Node):
 
 
 # EDU 저장소 100.cart_to_trunk_dual_side_holonomic.py에 2026-07-27 실측 확인된
-# 문제와 동일 원인: 매 스텝 world.step(render=True)로 "물리 스텝 + 화면 렌더링"을
-# 항상 같이 하면 렌더링 비용 때문에 한 스텝의 실제 소요 시간이 크게 늘어난다.
-# 물리는 결과/RMPflow 수렴 판정에 필요해서 매 스텝 반드시 진행해야 하지만
-# 렌더링은 그렇지 않다 - 이 노드에는 아직 카메라 센서도 없어서(cart2trunk_simulation
-# 이관 전) 화면에 표시할 것 자체가 없다. 물리는 계속 매 스텝 진행하되(world.step()
-# 자체는 매번 호출) 렌더링만 HEADLESS가 아닐 때 RENDER_EVERY_N_STEPS 스텝에 한
-# 번으로 줄인다(100.py의 RENDER_EVERY_N_STEPS=4와 동일값) - HEADLESS면 위
-# 워밍업 루프(world.step(render=not HEADLESS))와 동일하게 아예 렌더링 안 함.
-RENDER_EVERY_N_STEPS = 4
-
-
+# 문제와 동일한 동기로(매 스텝 world.step(render=True)의 렌더링 비용) 한때
+# RENDER_EVERY_N_STEPS로 렌더링 빈도를 줄이는 걸 시도했었다 - 그런데 카메라
+# ROS2 브리지(cart2trunk_simulation.core.sensor_bridge)를 붙인 뒤 실측
+# 확인: 렌더를 건너뛰는 스텝이 섞이면 OnPlaybackTick 그래프(카메라 렌더
+# 프로덕트/헬퍼)가 렌더 안 된 프레임을 붙잡고 있다가 omni.graph.image
+# 플러그인 안에서 네이티브 크래시(세그폴트, 2회 재현)를 냈다 - 렌더링 자체를
+# 매 스텝 하는 것보다 렌더 스킵이 이 카메라 파이프라인에서는 더 위험하다는
+# 뜻이라 스킵 최적화를 되돌렸다. 물리는 원래도 매 스텝 진행했으니 이 되돌림이
+# RMPflow 쪽 동작에는 영향 없다 - 렌더링만 다시 매 스텝 한다.
 def main():
     rclpy.init()
     node = PlatformControllerNode()
@@ -852,8 +886,7 @@ def main():
             node.step_lift_toward_target()
             node.apply_cmd_vel()
             node.apply_m0609_target()
-            should_render = (not HEADLESS) and (i % RENDER_EVERY_N_STEPS == 0)
-            world.step(render=should_render)
+            world.step(render=True)
             i += 1
             if i % publish_every_n == 0:
                 node.publish_lift_state()
