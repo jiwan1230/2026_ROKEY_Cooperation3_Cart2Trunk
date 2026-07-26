@@ -11,7 +11,7 @@ import styles from "./PickPlacePanel.module.css";
 
 const STEP_INTERVAL_MS = 700;
 
-export default function PickPlacePanel() {
+export default function PickPlacePanel({ onLog = () => {} }) {
   const [runState, setRunState] = useState("stopped"); // "stopped" | "running"
   const [stepIndex, setStepIndex] = useState(-1); // -1 = 아직 시작 안 함
   const timerRef = useRef(null);
@@ -19,6 +19,7 @@ export default function PickPlacePanel() {
   const advance = (nextIndex) => {
     if (nextIndex >= PICK_PLACE_STEPS.length) {
       setRunState("stopped");
+      onLog("픽앤플레이스 완료");
       return;
     }
     setStepIndex(nextIndex);
@@ -31,6 +32,7 @@ export default function PickPlacePanel() {
     // TODO(로봇 연동 시): 여기 응답으로 실제 진행 상태가 오면, 아래 advance()의
     // 프론트 자체 타이머 시뮬레이션 대신 그 값을 그대로 반영하도록 바꾼다.
     postPickAndPlace().catch(() => {});
+    onLog("픽앤플레이스 시작");
     advance(0);
   };
 

@@ -42,4 +42,19 @@ describe("PickPlacePanel", () => {
 
     vi.useRealTimers();
   });
+
+  it("시작하면 onLog가 시작 메시지로, 끝나면 완료 메시지로 호출된다", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(client, "postPickAndPlace").mockResolvedValue({ status: "ok", dummy: true, message: "완료" });
+    const onLog = vi.fn();
+
+    render(<PickPlacePanel onLog={onLog} />);
+    fireEvent.click(screen.getByTestId("trigger-pickAndPlace"));
+    expect(onLog).toHaveBeenCalledWith("픽앤플레이스 시작");
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(700 * 6); });
+    expect(onLog).toHaveBeenCalledWith("픽앤플레이스 완료");
+
+    vi.useRealTimers();
+  });
 });
