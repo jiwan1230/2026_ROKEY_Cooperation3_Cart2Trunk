@@ -16,6 +16,14 @@ def test_delivery_truck_places_later_stops_farther_from_entrance():
     assert resp.status_code == 200
     body = resp.get_json()
     assert body["summary"]["total"] == 4
+    # Before(카트 대기) 화면을 그리려면 배치 성공 여부와 무관하게 박스
+    # 전체의 크기 정보(boxes)가 필요하다.
+    assert body["boxes"] == [
+        {"id": "정류장1_박스", "width": 0.3, "depth": 0.25, "height": 0.2},
+        {"id": "정류장2_박스", "width": 0.3, "depth": 0.25, "height": 0.2},
+        {"id": "정류장3_박스", "width": 0.3, "depth": 0.25, "height": 0.2},
+        {"id": "정류장4_박스", "width": 0.3, "depth": 0.25, "height": 0.2},
+    ]
     by_id = {p["box_id"]: p for p in body["placed"]}
     assert by_id["정류장4_박스"]["position"][0] > by_id["정류장1_박스"]["position"][0]
 

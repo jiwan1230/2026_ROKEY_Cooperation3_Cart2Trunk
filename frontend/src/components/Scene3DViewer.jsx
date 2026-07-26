@@ -51,9 +51,13 @@ const CAMERA_PRESETS = {
 
 export default function Scene3DViewer() {
   const state = usePlannerState();
+
   // 산업현장 시나리오 미리보기 - state.result(지금 작업 중인 계획)는 전혀
-  // 건드리지 않는 완전히 별도의 로컬 상태다. 활성화되면 아래 렌더링에서
-  // 기존 trunk/placed 기반 씬 대신 이걸 보여준다.
+  // 건드리지 않는 완전히 별도의 로컬 상태다. 활성화되면 effectiveResult가
+  // scenarioResult를 가리키게 되어, 아래 Before/After・카트 적재・순서대로
+  // 재생 로직을 실시간 계획과 완전히 동일하게 재사용한다("실시간 계획하고
+  // 똑같이 해줘야지"라는 사용자 피드백 반영 - 처음엔 별도의 단순 렌더링
+  // 경로를 따로 만들었었는데, 카트/Before/재생이 전부 빠져서 부족했다).
   const [activeScenarioId, setActiveScenarioId] = useState(null);
   const [scenarioResult, setScenarioResult] = useState(null);
   const [scenarioError, setScenarioError] = useState(null);
@@ -79,6 +83,12 @@ export default function Scene3DViewer() {
     setScenarioError(null);
   };
 
+  // 시나리오가 활성화되어 있으면 이후 모든 파생 상태(trunk/placed/카트
+  // 적재/Before-After/순서대로 재생)가 scenarioResult 기준으로 계산된다 -
+  // state.result 기준 코드를 두 번 만들지 않고 그대로 재사용한다.
+  const effectiveResult = activeScenarioId ? scenarioResult : state.result;
+  const boxColor = (boxId) => (activeScenarioId ? scenarioBoxColor(activeScenarioId, boxId) : colorForBoxId(boxId));
+
   const controlsRef = useRef(null);
   const [preset, setPreset] = useState("front");
   // tkinter GUI의 Before/After 정적 이미지 대신, 같은 3D 씬을 그대로 두고
@@ -87,18 +97,19 @@ export default function Scene3DViewer() {
   const [stage, setStage] = useState("after"); // "before" | "after"
   const dpr = useDevicePixelRatio();
 
-  const placed = state.result?.placed || [];
+  const placed = effectiveResult?.placed || [];
   // "순서대로 재생" - visibleCount만큼만(order 순서대로) 박스를 보여준다.
   // null이면 "재생 안 함" 상태로, 전부 다 보여준다(기본 동작).
   const [visibleCount, setVisibleCount] = useState(null);
   const [animating, setAnimating] = useState(false);
 
-  // 새로 계산된 결과가 들어오면 재생 상태를 초기화하고 전부 다 보여주는
-  // 기본 상태로 되돌린다 - 이전 재생의 중간 상태가 새 계획에 남아있으면 안 됨.
+  // 새로 계산된 결과가 들어오면(실시간 계획이든 시나리오든) 재생 상태를
+  // 초기화하고 전부 다 보여주는 기본 상태로 되돌린다 - 이전 재생의 중간
+  // 상태가 새 결과에 남아있으면 안 됨.
   useEffect(() => {
     setAnimating(false);
     setVisibleCount(null);
-  }, [state.result]);
+  }, [effectiveResult]);
 
   useEffect(() => {
     if (!animating) return undefined;
@@ -128,20 +139,23 @@ export default function Scene3DViewer() {
     controls.update();
   }, [preset]);
 
-  const trunk = state.result?.trunk;
+  const trunk = effectiveResult?.trunk;
   const showPlaced = stage === "after";
 
-  // 입력 박스 목록(state.boxesText)을 대기 박스 크기 조회용으로 파싱한다 -
-  // 타이핑 도중이라 문법이 깨져 있을 수 있으므로 실패하면 조용히 빈 배열로
-  // 취급한다(useDebouncedPlan.js와 같은 방어 방식).
+  // 대기 박스 크기 조회용 전체 박스 목록. 실시간 계획은 state.boxesText를
+  // 파싱(타이핑 도중이라 문법이 깨져 있을 수 있으므로 실패하면 조용히 빈
+  // 배열로 취급 - useDebouncedPlan.js와 같은 방어 방식), 시나리오는
+  // scenarioResult.boxes(백엔드가 이미 {id,width,depth,height} shape로 줌)를
+  // 그대로 쓴다.
   const inputBoxes = useMemo(() => {
+    if (activeScenarioId) return scenarioResult?.boxes || [];
     try {
       const parsed = JSON.parse(state.boxesText);
       return Array.isArray(parsed) ? parsed : [];
     } catch {
       return [];
     }
-  }, [state.boxesText]);
+  }, [activeScenarioId, scenarioResult, state.boxesText]);
 
   // layoutStagingBoxes는 칸마다 "먼저 들어온 박스가 바닥, 나중에 들어온
   // 박스가 위"로 쌓는다 - 그래서 넘겨주는 순서가 곧 "쌓이는 순서"다.
@@ -157,15 +171,15 @@ export default function Scene3DViewer() {
   // 있는 박스"부터 없어진다. 못 실은(unloadable) 박스는 절대 안 없어지므로
   // 맨 밑(다른 박스를 가리지 않는 자리)에 깔아둔다.
   const cartStackingOrder = useMemo(() => {
-    if (!state.result) return inputBoxes; // 계산 전엔 적재 순서 정보가 없음
+    if (!effectiveResult) return inputBoxes; // 계산 전엔 적재 순서 정보가 없음
     const boxById = Object.fromEntries(inputBoxes.map((b) => [b.id, b]));
-    const reversedPlacedIds = [...state.result.placed]
+    const reversedPlacedIds = [...effectiveResult.placed]
       .sort((a, b) => a.order - b.order)
       .map((p) => p.box_id)
       .reverse();
-    const unloadableIds = (state.result.unloadable || []).map((u) => u.box_id);
+    const unloadableIds = (effectiveResult.unloadable || []).map((u) => u.box_id);
     return [...unloadableIds, ...reversedPlacedIds].map((id) => boxById[id]).filter(Boolean);
-  }, [state.result, inputBoxes]);
+  }, [effectiveResult, inputBoxes]);
 
   // 카트 모양과 그 안 박스들의 자리는 항상 "박스 목록 전체"를 기준으로 한
   // 번만 계산해서 고정해 둔다(fullCartLayout) - Before/After를 오가거나
@@ -185,13 +199,13 @@ export default function Scene3DViewer() {
   // 사라지며 트렁크에 하나씩 나타나는 것처럼 보이게 한다(사용자 피드백).
   const stagedBoxIds = useMemo(() => {
     if (stage === "before") return new Set(inputBoxes.map((b) => b.id));
-    if (!state.result) return new Set();
-    const unloadableIds = (state.result.unloadable || []).map((u) => u.box_id);
+    if (!effectiveResult) return new Set();
+    const unloadableIds = (effectiveResult.unloadable || []).map((u) => u.box_id);
     const notYetVisibleIds = visibleCount === null
       ? []
       : placed.slice(visibleCount).map((p) => p.box_id);
     return new Set([...unloadableIds, ...notYetVisibleIds]);
-  }, [stage, inputBoxes, state.result, visibleCount, placed]);
+  }, [stage, inputBoxes, effectiveResult, visibleCount, placed]);
 
   const stagedBoxes = useMemo(
     () => fullCartLayout.filter((b) => stagedBoxIds.has(b.id)),
@@ -201,22 +215,20 @@ export default function Scene3DViewer() {
   return (
     <div className={styles.wrapper}>
       <div className={styles.toolbar}>
-        {!activeScenarioId && (
-          <div className={styles.stageBar}>
-            {[["before", "Before"], ["after", "After"]].map(([value, text]) => (
-              <button
-                key={value}
-                type="button"
-                className={stage === value ? styles.stageActive : styles.stage}
-                onClick={() => setStage(value)}
-              >
-                {text}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className={styles.stageBar}>
+          {[["before", "Before"], ["after", "After"]].map(([value, text]) => (
+            <button
+              key={value}
+              type="button"
+              className={stage === value ? styles.stageActive : styles.stage}
+              onClick={() => setStage(value)}
+            >
+              {text}
+            </button>
+          ))}
+        </div>
         <div className={styles.presetBar}>
-          {!activeScenarioId && showPlaced && placed.length > 0 && (
+          {showPlaced && placed.length > 0 && (
             <button type="button" disabled={animating} onClick={handlePlayStepByStep}>
               {animating ? `▶ 재생 중 (${visibleCount}/${placed.length})` : "▶ 순서대로 재생"}
             </button>
@@ -257,36 +269,27 @@ export default function Scene3DViewer() {
           sectionSize={1} sectionThickness={1} sectionColor="#B8B8C4"
           fadeDistance={9} fadeStrength={1.2} infiniteGrid
         />
-        {activeScenarioId && scenarioResult ? (
-          <>
-            <BoundingBoxWireframe x={0} y={0} z={0}
-              width={scenarioResult.trunk.width} depth={scenarioResult.trunk.depth}
-              height={scenarioResult.trunk.height} color={scenarioTrunkColor(activeScenarioId)} />
-            {scenarioResult.placed.map((p) => (
-              <SceneBoxMesh key={p.box_id} position={p.position} dimensions={p.dimensions}
-                            color={scenarioBoxColor(activeScenarioId, p.box_id)} />
-            ))}
-          </>
-        ) : (
-          <>
-            {trunk && <TrunkWireframe trunk={trunk} />}
-            {cartFootprint && (
-              <CartWireframe footprint={cartFootprint} entranceNearX={trunk.entrance_near_x !== false} />
-            )}
-            {state.result?.obstacles?.map((o) => (
-              <SceneBoxMesh key={o.id} position={[o.x, o.y, o.z]}
-                            dimensions={[o.width, o.depth, o.height]} color="#7f8c8d" />
-            ))}
-            {showPlaced && visiblePlaced.map((p) => (
-              <SceneBoxMesh key={p.box_id} position={p.position} dimensions={p.dimensions}
-                            color={colorForBoxId(p.box_id)} dashed={p.position[2] > 1e-6} />
-            ))}
-            {stagedBoxes.map((b) => (
-              <SceneBoxMesh key={b.id} position={b.position} dimensions={b.dimensions}
-                            color={colorForBoxId(b.id)} />
-            ))}
-          </>
+        {trunk && (
+          activeScenarioId
+            ? <BoundingBoxWireframe x={0} y={0} z={0} width={trunk.width} depth={trunk.depth}
+                                    height={trunk.height} color={scenarioTrunkColor(activeScenarioId)} />
+            : <TrunkWireframe trunk={trunk} />
         )}
+        {cartFootprint && (
+          <CartWireframe footprint={cartFootprint} entranceNearX={trunk.entrance_near_x !== false} />
+        )}
+        {(effectiveResult?.obstacles || []).map((o) => (
+          <SceneBoxMesh key={o.id} position={[o.x, o.y, o.z]}
+                        dimensions={[o.width, o.depth, o.height]} color="#7f8c8d" />
+        ))}
+        {showPlaced && visiblePlaced.map((p) => (
+          <SceneBoxMesh key={p.box_id} position={p.position} dimensions={p.dimensions}
+                        color={boxColor(p.box_id)} dashed={p.position[2] > 1e-6} />
+        ))}
+        {stagedBoxes.map((b) => (
+          <SceneBoxMesh key={b.id} position={b.position} dimensions={b.dimensions}
+                        color={boxColor(b.id)} />
+        ))}
       </Canvas>
     </div>
   );

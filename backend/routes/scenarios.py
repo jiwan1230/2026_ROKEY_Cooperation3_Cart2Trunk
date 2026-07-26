@@ -91,6 +91,12 @@ def compute_scenario_plan(scenario_id):
             "width": trunk.width, "depth": trunk.depth, "height": trunk.height,
             "entrance_near_x": trunk.entrance_near_x,
         },
+        # 프론트가 Before(카트에 대기 중) 화면을 그리려면 배치 성공/실패와
+        # 무관하게 "원래 실으려던 박스 전체"의 크기가 필요하다 - 시뮬레이터
+        # 탭의 inputBoxes(state.boxesText)와 같은 shape({id,width,depth,height}).
+        "boxes": [
+            {"id": b.id, "width": b.width, "depth": b.depth, "height": b.height} for b in boxes
+        ],
         "placed": [
             {"box_id": p.box_id, "position": list(p.position), "dimensions": list(p.dimensions), "order": p.order}
             for p in plans
