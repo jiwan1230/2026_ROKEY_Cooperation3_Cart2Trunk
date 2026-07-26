@@ -53,6 +53,61 @@ from typing import List, Optional, Tuple
 # ①이 카메라 좌표계 등 엉뚱한 좌표를 그대로 써버릴 위험이 있어 바로 에러를 낸다.
 EXPECTED_BOX_FRAME = "m0609_base_link"
 
+# ⑥ 픽업 순서(rests_on_id) 자동 판정용 임계값. 비전이 주는 support_candidate_id/
+# top_candidate_id는 RANSAC 트라이얼마다 새로 매겨지는 임시 번호라 서로 다른 박스가
+# 같은 값을 가질 수 있어(실측 확인 - Cart2Trunk 3박스 스캔에서 서로 다른 두 박스가
+# 똑같이 top_candidate_id=3) id 매칭에 쓸 수 없다 - 그래서 corners_m(실제 3D 좌표,
+# id와 무관)로 기하학적으로 직접 판정한다: "이 박스 바닥이 다른 박스 윗면과 거의
+# 맞닿아 있고(REST_Z_TOLERANCE_M 이내) XY 풋프린트가 충분히 겹치면
+# (REST_MIN_XY_OVERLAP_RATIO 이상) 그 박스 위에 얹혀있다"고 본다.
+# Z 허용오차 - perception 쪽 지지면 검출이 실측으로 확인한 부모-자식 간 틈
+# (M1-XS1 1.0cm, M2-XS2 2.4cm, multiview_scan.py 참고)보다 넉넉하게, 그러면서도
+# 카트 바닥까지의 실제 거리(수 cm~수십 cm)보다는 확실히 작게 잡는다.
+REST_Z_TOLERANCE_M = 0.03
+# XY 겹침 비율 - perception의 _snap_bottoms_to_detected_parents()가 쓰는
+# MIN_PARENT_OVERLAP_RATIO와 같은 값(0.3)을 재사용해 두 판정 기준을 통일한다.
+REST_MIN_XY_OVERLAP_RATIO = 0.3
+
+
+def _xy_overlap_ratio(child_bounds, parent_bounds):
+    """child의 XY 풋프린트 중 parent와 겹치는 비율(0~1). bounds=(x_min,x_max,y_min,y_max)."""
+    cx_min, cx_max, cy_min, cy_max = child_bounds
+    px_min, px_max, py_min, py_max = parent_bounds
+    overlap_x = max(0.0, min(cx_max, px_max) - max(cx_min, px_min))
+    overlap_y = max(0.0, min(cy_max, py_max) - max(cy_min, py_min))
+    overlap_area = overlap_x * overlap_y
+    child_area = max(1e-9, (cx_max - cx_min) * (cy_max - cy_min))
+    return overlap_area / child_area
+
+
+def _infer_rests_on_ids(box_aabbs):
+    """box_aabbs: {id: (x_min,x_max,y_min,y_max,z_min,z_max)} -> {id: 부모 id 또는 None}.
+
+    각 박스마다 "바닥 z가 내 바닥보다 낮은(=진짜 아래에 있는) 다른 박스 중, 그
+    박스의 윗면과 내 바닥이 거의 맞닿고 XY가 겹치는" 후보를 찾는다. 후보가 여럿이면
+    z 간격이 가장 작은(=가장 직접 맞닿은) 쪽을 부모로 택한다. 후보가 없으면(카트
+    바닥에 직접 놓인 경우) None - 기존 동작(픽업 순서 제약 없음)과 동일."""
+    result = {}
+    for box_id, (x_min, x_max, y_min, y_max, z_min, z_max) in box_aabbs.items():
+        best_parent_id = None
+        best_z_gap = None
+        for other_id, (ox_min, ox_max, oy_min, oy_max, oz_min, oz_max) in box_aabbs.items():
+            if other_id == box_id or oz_max > z_min + REST_Z_TOLERANCE_M:
+                continue  # 자기 자신이거나, 내 바닥보다 위/훨씬 아래가 아닌 다른 박스는 부모 후보 아님
+            z_gap = abs(z_min - oz_max)
+            if z_gap > REST_Z_TOLERANCE_M:
+                continue
+            overlap = _xy_overlap_ratio(
+                (x_min, x_max, y_min, y_max), (ox_min, ox_max, oy_min, oy_max)
+            )
+            if overlap < REST_MIN_XY_OVERLAP_RATIO:
+                continue
+            if best_z_gap is None or z_gap < best_z_gap:
+                best_z_gap = z_gap
+                best_parent_id = other_id
+        result[box_id] = best_parent_id
+    return result
+
 
 @dataclass(frozen=True)
 class Object3D:
@@ -110,6 +165,10 @@ def load_boxes_from_vision_json(path) -> List[Object3D]:
 
     confidence 필드는 실제 샘플에 아예 없다 - Q1 답변대로 "0.7 이하는 Vision 단에서
     이미 필터링됨"을 전제로, 여기 도착한 박스는 전부 confidence=1.0으로 채운다.
+
+    rests_on_id(⑥ 픽업 순서 제약용)는 support_candidate_id 같은 비전 필드를 믿지
+    않고(위 _infer_rests_on_ids() docstring 참고 - id가 트라이얼마다 재사용돼
+    박스 간 매칭에 못 씀) corners_m로부터 직접 기하학적으로 계산한다.
     """
     import json
     from pathlib import Path
@@ -124,7 +183,8 @@ def load_boxes_from_vision_json(path) -> List[Object3D]:
             f"요청해야 함 (카메라 좌표계 그대로 쓰면 엉뚱한 자리에 배치됨)"
         )
 
-    boxes = []
+    parsed = []
+    box_aabbs = {}
     for entry in data.get("boxes", []):
         corners = entry["corners_m"]
         xs = [c[0] for c in corners]
@@ -134,16 +194,25 @@ def load_boxes_from_vision_json(path) -> List[Object3D]:
         y_min, y_max = min(ys), max(ys)
         z_min, z_max = min(zs), max(zs)
 
+        box_id = str(entry["box_id"])
+        box_aabbs[box_id] = (x_min, x_max, y_min, y_max, z_min, z_max)
+
         size_xyz = (x_max - x_min, y_max - y_min, z_max - z_min)
         center_xyz = ((x_min + x_max) / 2, (y_min + y_max) / 2, (z_min + z_max) / 2)
         volume = size_xyz[0] * size_xyz[1] * size_xyz[2]
+        parsed.append((box_id, center_xyz, size_xyz, volume))
 
+    rests_on_by_id = _infer_rests_on_ids(box_aabbs)
+
+    boxes = []
+    for box_id, center_xyz, size_xyz, volume in parsed:
         boxes.append(Object3D(
-            id=str(entry["box_id"]),
+            id=box_id,
             center_xyz=center_xyz,
             size_xyz=size_xyz,
             volume=volume,
             confidence=1.0,
+            rests_on_id=rests_on_by_id.get(box_id),
         ))
     return boxes
 

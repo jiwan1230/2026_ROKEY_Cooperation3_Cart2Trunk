@@ -26,12 +26,31 @@ from cart2trunk_common.geometry import IDENTITY_QUATERNION, center_to_corner, co
 from cart2trunk_planning.core.extreme_point_candidates import Box, PlacedBox
 from cart2trunk_planning.core.trunk_space_state import Trunk
 from cart2trunk_planning.core.rescan_replan import replan_after_rescan
+from cart2trunk_planning.core.object3d_schema import _infer_rests_on_ids
 
 _ROTATED_90DEG_Z_QUAT = quaternion_from_z_yaw(math.pi / 2)
 
 
-def box3d_to_core_box(box3d) -> Box:
-    return Box(id=box3d.box_id, width=box3d.size.x, depth=box3d.size.y, height=box3d.size.z)
+def box3d_to_core_box(box3d, rests_on_id=None) -> Box:
+    return Box(
+        id=box3d.box_id, width=box3d.size.x, depth=box3d.size.y, height=box3d.size.z,
+        rests_on_id=rests_on_id,
+    )
+
+
+def _box3d_aabb(box3d) -> tuple:
+    """box3d.corners(실제 검출된 8꼭짓점)의 min/max로 AABB를 만든다.
+    detected_pose.position ± size/2로 재구성하지 않는 이유: 박스가 회전되어
+    있으면(yaw != 0) 그 방식은 실제 풋프린트보다 작은 바운딩박스를 만들어
+    rests_on_id XY 겹침 판정이 틀어진다 - EDU 저장소 object3d_schema.py의
+    load_boxes_from_vision_json()이 corners_m의 min/max를 쓰는 것과 같은 이유.
+    corners가 채워지지 않은 박스(예: dummy_scan_boxes_server, 8개 전부 기본값
+    (0,0,0))는 부피 0인 퇴화 AABB가 되어 _infer_rests_on_ids()의 겹침 비율이
+    항상 0이 되므로, 기존 동작(rests_on_id=None)과 자연히 동일하게 유지된다."""
+    xs = [c.x for c in box3d.corners]
+    ys = [c.y for c in box3d.corners]
+    zs = [c.z for c in box3d.corners]
+    return (min(xs), max(xs), min(ys), max(ys), min(zs), max(zs))
 
 
 def occupied_box3d_to_placed_box(box3d) -> PlacedBox:
@@ -74,7 +93,13 @@ def compute_load_plan(boxes_msg, trunk_map_msg, mode: str = 'large_first', margi
         height=trunk_map_msg.inner_size.z,
     )
     obstacles = [occupied_box3d_to_placed_box(b) for b in trunk_map_msg.occupied_boxes]
-    boxes = [box3d_to_core_box(b) for b in boxes_msg.boxes]
+
+    box_aabbs = {b.box_id: _box3d_aabb(b) for b in boxes_msg.boxes}
+    rests_on_by_id = _infer_rests_on_ids(box_aabbs)
+    boxes = [
+        box3d_to_core_box(b, rests_on_id=rests_on_by_id.get(b.box_id))
+        for b in boxes_msg.boxes
+    ]
     plans, unloadable = replan_after_rescan(boxes, trunk, obstacles, mode=mode, margin=margin)
     return plans, unloadable
 
