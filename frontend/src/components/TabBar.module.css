@@ -1,0 +1,11 @@
+/* src/components/TabBar.module.css */
+.tabBar {
+  display: flex; gap: 4px; padding: 0 28px; background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+.tab, .tabActive {
+  border: none; background: transparent; padding: 12px 18px; font-size: 14px;
+  font-weight: 600; cursor: pointer; color: var(--color-text-secondary);
+  border-bottom: 2px solid transparent;
+}
+.tabActive { color: var(--color-accent); border-bottom-color: var(--color-accent); }
