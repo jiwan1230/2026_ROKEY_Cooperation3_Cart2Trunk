@@ -1,0 +1,28 @@
+/* src/components/ScanViewerPanel.module.css */
+.panel {
+  height: 100%; min-height: 0; background: var(--color-surface); border-radius: 12px; padding: 16px;
+  display: flex; flex-direction: column; gap: 10px; min-width: 0;
+}
+.header { display: flex; align-items: center; justify-content: space-between; }
+.title { font-size: 13px; font-weight: 700; color: var(--color-text-primary); }
+.toggle { display: flex; background: var(--color-segment-bg); border-radius: 8px; padding: 2px; }
+.toggleBtn, .toggleActive {
+  border: none; background: transparent; border-radius: 6px; padding: 4px 10px;
+  font-size: 12px; font-weight: 600; cursor: pointer; color: var(--color-text-secondary);
+}
+.toggleActive { background: var(--color-accent); color: white; }
+
+.canvasWrap { flex: 1; min-height: 320px; border-radius: 8px; overflow: hidden; background: var(--color-canvas); }
+
+.panel > button {
+  border: none; border-radius: 8px; padding: 10px 16px; font-size: 13px; font-weight: 700;
+  cursor: pointer; background: var(--color-accent); color: white;
+}
+.panel > button:disabled { background: var(--color-segment-bg); color: var(--color-text-secondary); cursor: not-allowed; }
+
+.status {
+  align-self: flex-start; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 999px;
+  background: var(--color-segment-bg); color: var(--color-text-secondary);
+}
+.status[data-status="running"] { background: #FFF6DE; color: #B98900; }
+.status[data-status="done"] { background: #E4F8EA; color: var(--color-success); }

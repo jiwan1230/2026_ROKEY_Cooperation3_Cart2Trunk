@@ -1,0 +1,22 @@
+/* src/App.module.css */
+.layout { display: flex; flex-direction: column; height: 100vh; }
+.body { display: grid; grid-template-columns: 340px 1fr; flex: 1; overflow: hidden; }
+.resultArea { display: flex; flex-direction: column; gap: 16px; padding: 20px; overflow-y: auto; }
+
+/* "화면 1"(요약 카드+결과 로그) 좁게 + "메인 화면 - 2"(3D 뷰어) 넓게 나란히
+   - 좁은 화면(랩탑 등)에서는 옆으로 나란히 두면 둘 다 너무 좁아지므로
+   세로로 다시 쌓는다. */
+.topRow { display: flex; gap: 16px; align-items: stretch; }
+/* stretch로 3D 뷰어와 높이를 맞춘다. 요약 카드는 위쪽에 자기 높이만큼만
+   차지하고, 결과 로그는 margin-top:auto로 나머지 빈 공간을 밀어내면서
+   칸 맨 밑에 붙는다(사용자 피드백 - "결과 로그를 쭉 내려서 칸 맨 밑에
+   배치") - LogPanel.module.css의 max-height와 짝을 이뤄, 로그가 길어져도
+   칸 밖으로 넘치지 않고 그 안에서 스크롤된다. */
+.leftColumn { flex: 0 0 340px; display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+.leftColumn > :last-child { margin-top: auto; }
+.topRow > :last-child { flex: 1; min-width: 0; }
+
+@media (max-width: 900px) {
+  .topRow { flex-direction: column; }
+  .leftColumn { flex: none; width: 100%; }
+}

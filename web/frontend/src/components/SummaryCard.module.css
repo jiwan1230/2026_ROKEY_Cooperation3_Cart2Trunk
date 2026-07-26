@@ -1,0 +1,28 @@
+/* src/components/SummaryCard.module.css */
+/* "우리 알고리즘을 점수화한 핵심 화면이니 크게 보여달라"는 피드백 - 패딩/
+   글자 크기를 전반적으로 키움. */
+.card { background: var(--color-surface); border-radius: 12px; padding: 24px; display: flex; flex-direction: column; gap: 10px; }
+/* space-between을 쓰면 카드가 넓을 때 라벨과 값이 카드 양 끝까지 떨어져서
+   가독성이 떨어진다는 사용자 피드백 - 컨테이너 너비와 무관하게 라벨/값
+   사이 간격이 일정하도록 flex-start + 고정 gap으로 바꿈. */
+.row { display: flex; align-items: baseline; justify-content: flex-start; gap: 16px; font-size: 16px; }
+/* 회색(--color-text-secondary)이 숫자(검정)에 비해 너무 흐려서 안 띈다는
+   피드백 - 라벨/상태/기준 설명 전부 본문 색(--color-text-primary)으로
+   올림. */
+.row span { min-width: 110px; color: var(--color-text-primary); }
+.row strong { font-size: 20px; }
+.status { margin-top: 8px; font-size: 14px; color: var(--color-text-primary); }
+.criteria { font-size: 13px; color: var(--color-text-primary); }
+/* 괄호 설명이 등급 기준 문장 중간에서 줄바꿈되면 줄 폭이 들쭉날쭉해 보인다는
+   피드백 - 괄호 부분을 아예 다음 줄로 떼어내고, 같은 캡션이라는 게 보이게
+   살짝만 간격을 둔다(카드 전체 gap:10px보다는 좁게). */
+.criteriaNote { margin-top: 2px; }
+
+.grade {
+  margin-left: 10px; font-size: 13px; font-weight: 700; padding: 3px 10px;
+  border-radius: 999px; vertical-align: middle;
+}
+.grade[data-grade="우수"] { background: #E4F8EA; color: var(--color-success); }
+.grade[data-grade="양호"] { background: #E6F1FF; color: var(--color-accent); }
+.grade[data-grade="보통"] { background: #FFF6DE; color: #B98900; }
+.grade[data-grade="개선 필요"] { background: #FFEEEC; color: var(--color-danger); }

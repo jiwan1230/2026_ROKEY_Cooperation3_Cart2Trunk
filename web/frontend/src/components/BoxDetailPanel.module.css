@@ -1,0 +1,25 @@
+.panel { background: var(--color-surface); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.label { font-size: 11px; font-weight: 700; color: var(--color-text-secondary); text-transform: uppercase; }
+.select { border: 1px solid var(--color-border); border-radius: 8px; padding: 6px 8px; }
+.detail { font-size: 12px; display: flex; flex-direction: column; gap: 6px; }
+/* <table>은 부모 flex 컨테이너가 너비를 꽉 채우도록(align-items:stretch)
+   강제하면서 값 칸이 화면 끝까지 밀려나는 문제가 있었음(사용자 피드백) -
+   flex row + 고정 gap으로 바꿔서 컨테이너 너비와 무관하게 라벨/값 사이
+   간격이 일정하게 유지되도록 함. */
+.breakdown { display: flex; flex-direction: column; gap: 2px; }
+.breakdownRow {
+  display: flex; align-items: baseline; gap: 16px;
+  padding: 3px 0; border-bottom: 1px solid var(--color-border);
+}
+.breakdownRow span:first-child { min-width: 130px; }
+.placeholder { font-size: 12px; color: var(--color-text-secondary); }
+
+.gradeCaption { font-size: 11px; color: var(--color-text-secondary); }
+.grade {
+  margin-left: 8px; font-size: 11px; font-weight: 700; padding: 2px 8px;
+  border-radius: 999px; vertical-align: middle;
+}
+.grade[data-grade="우수"] { background: #E4F8EA; color: var(--color-success); }
+.grade[data-grade="양호"] { background: #E6F1FF; color: var(--color-accent); }
+.grade[data-grade="보통"] { background: #FFF6DE; color: #B98900; }
+.grade[data-grade="개선 필요"] { background: #FFEEEC; color: var(--color-danger); }
