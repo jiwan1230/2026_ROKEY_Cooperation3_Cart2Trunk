@@ -1,0 +1,29 @@
+/* src/components/PickPlacePanel.module.css */
+.panel {
+  flex: 1; background: var(--color-surface); border-radius: 12px; padding: 16px;
+  display: flex; flex-direction: column; gap: 16px; min-width: 0;
+}
+.title { font-size: 13px; font-weight: 700; color: var(--color-text-primary); }
+.label { font-size: 11px; font-weight: 700; color: var(--color-text-secondary); text-transform: uppercase; }
+
+.progressSection { display: flex; flex-direction: column; gap: 6px; }
+.progressBar { height: 10px; border-radius: 999px; background: var(--color-segment-bg); overflow: hidden; }
+.progressFill { height: 100%; background: var(--color-accent); transition: width 0.3s ease; }
+.progressPct { align-self: flex-end; font-size: 12px; color: var(--color-text-secondary); }
+
+.taskSection { display: flex; flex-direction: column; gap: 6px; }
+.taskText { font-size: 14px; font-weight: 600; color: var(--color-text-primary); }
+
+.statusSection { display: flex; flex-direction: column; gap: 6px; }
+.statusBadge {
+  align-self: flex-start; font-size: 12px; font-weight: 700; padding: 3px 12px; border-radius: 999px;
+}
+.statusBadge[data-status="stopped"] { background: #FFEEEC; color: var(--color-danger); }
+.statusBadge[data-status="running"] { background: #E4F8EA; color: var(--color-success); }
+.statusBadge[data-status="warning"] { background: #E6F1FF; color: var(--color-accent); }
+
+.panel > button {
+  border: none; border-radius: 8px; padding: 10px 16px; font-size: 13px; font-weight: 700;
+  cursor: pointer; background: var(--color-accent); color: white;
+}
+.panel > button:disabled { background: var(--color-segment-bg); color: var(--color-text-secondary); cursor: not-allowed; }
