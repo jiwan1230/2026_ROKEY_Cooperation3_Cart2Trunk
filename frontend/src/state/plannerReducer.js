@@ -72,6 +72,13 @@ export function plannerReducer(state, action) {
         boxSourceLabel: initialPresetName,
       };
     }
+    // 트렁크 스캔이 백그라운드에서 끝나 새 run_*/pointcloud/trunk_map.json이
+    // 생겨도 페이지를 새로고침하기 전엔 드롭다운에 안 보이던 문제 - 주기적으로
+    // 목록만 다시 불러온다(useResourceLoader.js). RESOURCES_LOADED와 달리
+    // 현재 선택된 trunkMap/박스 입력을 건드리지 않는다 - 작업 중인 화면이
+    // 폴링 때문에 매번 초기화되면 안 되므로 목록 자체만 갱신한다.
+    case "TRUNK_MAPS_REFRESHED":
+      return { ...state, trunkMaps: action.payload.trunkMaps };
     case "SET_TRUNK_MAP":
       return invalidateIfNeeded({ ...state, trunkMap: action.payload });
     case "SELECT_PRESET": {

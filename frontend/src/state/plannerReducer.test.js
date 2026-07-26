@@ -30,6 +30,26 @@ describe("plannerReducer", () => {
     expect(JSON.parse(state.boxesText)).toEqual([{ id: "Large", width: 0.5, depth: 0.35, height: 0.3 }]);
   });
 
+  it("TRUNK_MAPS_REFRESHED updates the trunk map list without disturbing the current selection", () => {
+    // 폴링(useResourceLoader.js)이 몇 초마다 목록만 다시 불러오는 액션 -
+    // 사용자가 이미 골라둔 trunkMap이나 입력 중인 박스 목록을 건드리면 안 된다.
+    const working = {
+      ...initialState,
+      trunkMaps: ["run_a"],
+      trunkMap: "run_a",
+      boxesText: '[{"id":"custom"}]',
+      boxSourceLabel: "custom",
+    };
+    const next = plannerReducer(working, {
+      type: "TRUNK_MAPS_REFRESHED",
+      payload: { trunkMaps: ["run_a", "run_new"] },
+    });
+    expect(next.trunkMaps).toEqual(["run_a", "run_new"]);
+    expect(next.trunkMap).toBe("run_a");
+    expect(next.boxesText).toBe('[{"id":"custom"}]');
+    expect(next.boxSourceLabel).toBe("custom");
+  });
+
   it("invalidates a computed plan when a param changes", () => {
     const computed = { ...initialState, planState: "COMPUTED" };
     const next = plannerReducer(computed, { type: "SET_PARAM", payload: { key: "mode", value: "count_first" } });
