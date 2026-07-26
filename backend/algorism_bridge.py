@@ -197,12 +197,20 @@ def compute_plan(
     wall_margin: Optional[float] = None, obstacle_margin: Optional[float] = None,
     ceiling_margin: Optional[float] = None, entrance_margin: Optional[float] = None,
     entrance_preference: float = 1.0, contact_preference: float = 1.0, height_preference: float = 1.0,
-    fixed_order: bool = False,
+    fixed_order: bool = False, box_snapshot_id: Optional[str] = None,
 ) -> dict:
     """POST /api/plan 하나가 필요로 하는 전체 응답 payload를 만든다.
     trunk_map_planner_node.plan_from_trunk_map_data()와 같은 순서로 02의
     파서를 직접 호출한다 (그 함수 자체를 import하지 않는 이유는 이 파일
-    최상단 docstring 참고)."""
+    최상단 docstring 참고).
+
+    [box_snapshot_id] 수동으로 타이핑/생성한 박스는 진짜 스냅샷 ID가 없어서
+    기본값(f"manual_input:{box_source_label}")을 쓰지만, vision_adapter로
+    box_scan.json/all_boxes_corners_*.json을 파싱해서 넘어온 박스는 준형
+    쪽이 실제로 부여한 snapshot_id가 있다 - 그 값을 여기로 그대로 넘기면
+    응답에 진짜 ID가 실려서 HMI 8절 원칙("Box Snapshot과 Trunk Map ID가
+    다르면 계획을 실행하지 않는다")과 ⑳ Task JSON의 box_snapshot_id에
+    그대로 쓸 수 있다."""
     import time
 
     world_map = load_trunk_from_world_map(trunk_map_data)
@@ -275,7 +283,7 @@ def compute_plan(
         },
         "log_lines": log_lines,
         "trunk_map_id": trunk_map_data.get("run_id", "?"),
-        "box_snapshot_id": f"manual_input:{box_source_label}",
+        "box_snapshot_id": box_snapshot_id or f"manual_input:{box_source_label}",
     }
 
 

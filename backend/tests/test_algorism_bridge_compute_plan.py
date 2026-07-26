@@ -38,6 +38,18 @@ def test_compute_plan_places_boxes_and_returns_full_payload():
     assert any("PLACED A" in line for line in result["log_lines"])
 
 
+def test_compute_plan_uses_real_box_snapshot_id_when_given():
+    # vision_adapter로 box_scan.json을 파싱해서 넘어온 경우, 매번 지어내는
+    # "manual_input:..." 대신 실제 snapshot_id를 응답에 그대로 실어야
+    # HMI 8절 원칙(Box Snapshot/Trunk Map ID 정합성 검증)과 ⑳ Task JSON에
+    # 진짜 값이 들어간다.
+    boxes = [{"id": "A", "width": 0.3, "depth": 0.2, "height": 0.15}]
+
+    result = bridge.compute_plan(_TRUNK_MAP, boxes, box_snapshot_id="box_scan_001")
+
+    assert result["box_snapshot_id"] == "box_scan_001"
+
+
 def test_compute_plan_reports_unloadable_when_box_too_big():
     boxes = [{"id": "Huge", "width": 5.0, "depth": 5.0, "height": 5.0}]
 

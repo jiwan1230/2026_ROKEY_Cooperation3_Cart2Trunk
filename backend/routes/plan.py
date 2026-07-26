@@ -76,6 +76,7 @@ def post_plan():
             contact_preference=body.get("contact_preference", 1.0),
             height_preference=body.get("height_preference", 1.0),
             fixed_order=body.get("fixed_order", False),
+            box_snapshot_id=body.get("box_snapshot_id"),
         )
     except (KeyError, TypeError) as e:
         raise ApiError(
