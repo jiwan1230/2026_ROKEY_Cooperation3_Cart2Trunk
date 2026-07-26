@@ -140,3 +140,14 @@ export function SceneBoxMesh({ position, dimensions, color, dashed }) {
     </group>
   );
 }
+
+// "원본"(가공 전) 더미 뷰용 - 개별 물체 구분 없이 전체를 감싸는 단순
+// 바운딩박스 와이어프레임 하나만 그린다.
+export function BoundingBoxWireframe({ x, y, z, width, depth, height, color = "#B8B8C4" }) {
+  return (
+    <mesh position={toThreeCenter(x, y, z, width, depth, height)}>
+      <boxGeometry args={[width, height, depth]} />
+      <meshBasicMaterial color={color} wireframe />
+    </mesh>
+  );
+}
