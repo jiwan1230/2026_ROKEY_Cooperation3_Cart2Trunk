@@ -15,7 +15,10 @@ setup(
     zip_safe=True,
     maintainer='jiwan',
     maintainer_email='gwanshin12301230@gmail.com',
-    description='Flask/WebSocket HMI backend',
+    description=(
+        "ROS2 bridge for the web/ HMI (Flask+React) - Flask itself lives "
+        "outside this workspace's colcon build, see web/README.md"
+    ),
     license='Apache-2.0',
     extras_require={
         'test': [
@@ -24,6 +27,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'ros_bridge_node = cart2trunk_hmi.ros_bridge_node:main',
         ],
     },
 )

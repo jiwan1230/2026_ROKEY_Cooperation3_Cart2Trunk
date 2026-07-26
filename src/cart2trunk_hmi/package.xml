@@ -3,12 +3,13 @@
 <package format="3">
   <name>cart2trunk_hmi</name>
   <version>0.0.0</version>
-  <description>Flask/WebSocket HMI backend</description>
+  <description>ROS2 bridge for the web/ HMI (Flask+React) - Flask itself lives outside this workspace's colcon build, see web/README.md</description>
   <maintainer email="gwanshin12301230@gmail.com">jiwan</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
+  <depend>cart2trunk_interfaces</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
