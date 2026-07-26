@@ -1,0 +1,5 @@
+[
+  {"id": "XL1", "width": 0.55, "depth": 0.40, "height": 0.35},
+  {"id": "XL2", "width": 0.55, "depth": 0.35, "height": 0.30},
+  {"id": "L1", "width": 0.45, "depth": 0.30, "height": 0.25}
+]

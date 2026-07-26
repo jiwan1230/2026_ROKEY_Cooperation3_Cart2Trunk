@@ -52,9 +52,13 @@ COUNT_FIRST_FOOTPRINT_GROWTH_WEIGHT = _m05.COUNT_FIRST_FOOTPRINT_GROWTH_WEIGHT
 DEFAULT_MARGIN = _m17.MARGIN
 build_task_json = _m20.build_task_json
 
-# planner_gui.py의 _discover_trunk_maps()와 같은 경로 관례 - 트렁크 스캔
-# run_* 폴더는 ROS2 워크스페이스 src/ 바로 밑에 쌓인다.
-_SRC_DIR = pathlib.Path("/home/sunwook/cobot3_ws/src")
+import os
+
+# planner_gui.py의 _discover_trunk_maps()와 같은 경로 관례 - 트렁크 스캔 run_*
+# 폴더는 ROS2 워크스페이스 src/ 바로 밑에 쌓인다. 이 경로는 PC/사용자 계정마다
+# 다르므로(원래 하드코딩돼 있던 /home/sunwook/... 는 다른 PC 계정 기준이라 이
+# 환경에 없음) 환경변수로 받고, 기본값은 이 저장소의 src/로 둔다.
+_SRC_DIR = pathlib.Path(os.environ.get("CART2TRUNK_SRC_DIR", str(_CART2TRUNK_DIR / "src")))
 _PENDING_TASKS_DIR = _ALGORISM_DIR / "local_test_data" / "pending_tasks"
 
 _DEFAULT_CART_BOXES = [

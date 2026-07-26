@@ -1,0 +1,9 @@
+[
+  {"id": "Small1", "width": 0.20, "depth": 0.15, "height": 0.15},
+  {"id": "Small2", "width": 0.20, "depth": 0.15, "height": 0.15},
+  {"id": "Small3", "width": 0.18, "depth": 0.18, "height": 0.12},
+  {"id": "Small4", "width": 0.18, "depth": 0.18, "height": 0.12},
+  {"id": "Small5", "width": 0.15, "depth": 0.15, "height": 0.10},
+  {"id": "Small6", "width": 0.15, "depth": 0.15, "height": 0.10},
+  {"id": "Medium1", "width": 0.35, "depth": 0.25, "height": 0.20}
+]

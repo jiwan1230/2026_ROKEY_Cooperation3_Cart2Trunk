@@ -1,0 +1,8 @@
+[
+  {"id": "Large", "width": 0.50, "depth": 0.35, "height": 0.30},
+  {"id": "Medium1", "width": 0.40, "depth": 0.30, "height": 0.25},
+  {"id": "Medium2", "width": 0.35, "depth": 0.28, "height": 0.22},
+  {"id": "Small1", "width": 0.25, "depth": 0.20, "height": 0.15},
+  {"id": "Small2", "width": 0.22, "depth": 0.18, "height": 0.12},
+  {"id": "Small3", "width": 0.20, "depth": 0.15, "height": 0.10}
+]
