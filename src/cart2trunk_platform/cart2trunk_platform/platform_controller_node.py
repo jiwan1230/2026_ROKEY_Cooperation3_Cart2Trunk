@@ -1,0 +1,414 @@
+"""MSI2(Isaac Sim PC): 하드웨어 제어 계층의 1차 슬라이스 - 리프트만.
+
+Isaac Sim은 물리 프림/Articulation 핸들을 하나의 프로세스 안에서만 공유할 수 있어서,
+mobile_base/lift/m0609/gripper 컨트롤러를 별도 `ros2 run` 프로세스로 쪼갤 수 없다 -
+전부 이 노드(`isaac_python`으로 실행하는 하나의 SimulationApp 프로세스) 안에서 살아야
+한다. 지금은 그 중 리프트만 구현했다(mobile_base/m0609/gripper는 이후 이 파일에
+이어 붙인다).
+
+[ROS2 인터페이스는 표준 메시지만 쓴다 - 중요한 설계 결정]
+Isaac Sim 번들 파이썬은 3.11인데 시스템 ROS2 Humble(cart2trunk_interfaces가 빌드된
+환경)은 3.10이라 rclpy C 확장(cp310)을 3.11이 못 읽는다. Isaac Sim은
+`isaacsim.ros2.bridge/humble/`에 자체 3.11용 rclpy+표준 메시지 빌드를 갖고 있지만
+colcon/ament_cmake 빌드 도구는 없어서 커스텀 인터페이스(Box3D 등)를 이 환경용으로
+새로 만들 수 없다 - 그래서 이 노드는 std_msgs/geometry_msgs/std_srvs 같은 표준
+타입만 쓴다(실측 확인: 시스템 python3.10 rclpy 프로세스와 이 노드 사이에
+std_msgs/Float32 토픽으로 정상 교차 통신됨). 커스텀 타입이 필요한 상위 계층
+(cart2trunk_motion 등)은 이 노드를 표준 메시지로 호출하고, 자신은 시스템
+파이썬(3.10)에서 별도 프로세스로 돈다 - Isaac Sim PC와 나머지 ROS 그래프를
+물리적으로 다른 PC로 분리해도 그대로 동작한다(DDS 통신이라 프로세스/머신 위치 무관).
+
+[씬 구성 출처]
+build_holonomic_base/build_mecanum_wheel/mount_m0609/add_drive_stiffness/quat_between는
+EDU 저장소 100.cart_to_trunk_dual_side_holonomic.py에서 그대로 가져왔다(수십 개
+커밋으로 튠된 물리 상수/조인트 설정이라 재작성하지 않고 그대로 옮김). 카트/차량/
+트렁크/RMPflow/그리퍼는 이 1차 슬라이스에 포함하지 않았다 - 리프트만 검증한다.
+
+[리프트가 물리 조인트가 아니라 키네마틱 텔레포트라는 점]
+100.py의 리프트는 실제 프리즘 조인트/드라이브가 아니라 M0609 베이스 프림을 매
+스텝 직접 teleport하는 방식이다(18~27번 lift_stage 스크립트에서 조인트 기반
+접근을 여러 번 시도하다 폐기하고 이 방식으로 정착한 결과 - 27.lift_stage9_visual_lift.py
+가 이 접근의 이름 그대로다). set_lift_height()가 그 로직이다.
+
+인터페이스:
+    /lift/move  (std_msgs/Float32, subscribe) - 목표 높이(LIFT_MIN~LIFT_MAX로 클램프)
+    /lift/state (std_msgs/Float32, publish)   - 현재 높이
+
+실행:
+    HEADLESS=1 isaac_python platform_controller_node.py
+"""
+from __future__ import annotations
+
+import os
+import sys
+
+HEADLESS = os.environ.get("HEADLESS", "0") == "1"
+
+from isaacsim import SimulationApp
+
+_sim_app_config = {"headless": HEADLESS}
+if not HEADLESS:
+    _sim_app_config.update({"width": 640, "height": 480})
+simulation_app = SimulationApp(_sim_app_config)
+
+# ---------------------------------------------------------------------------
+# Isaac Sim 번들 파이썬(3.11)에서 rclpy를 쓰려면 시스템 ROS2(3.10)가 아니라
+# isaacsim.ros2.bridge가 자체 포함한 humble 빌드를 잡아야 한다.
+# ---------------------------------------------------------------------------
+_ROS2_BRIDGE_HUMBLE = (
+    "/home/rokey/dev_ws/isaac_sim/isaacsim/_build/linux-x86_64/release/"
+    "exts/isaacsim.ros2.bridge/humble"
+)
+if os.path.isdir(_ROS2_BRIDGE_HUMBLE):
+    sys.path.insert(0, os.path.join(_ROS2_BRIDGE_HUMBLE, "rclpy"))
+    lib_dir = os.path.join(_ROS2_BRIDGE_HUMBLE, "lib")
+    os.environ["LD_LIBRARY_PATH"] = lib_dir + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
+os.environ.setdefault("RMW_IMPLEMENTATION", "rmw_fastrtps_cpp")
+
+import numpy as np
+import omni.usd
+from pxr import Usd, UsdGeom, UsdPhysics, UsdShade, Sdf, Gf
+
+from isaacsim.core.api import World
+from isaacsim.core.api.materials.physics_material import PhysicsMaterial
+from isaacsim.core.prims import SingleArticulation
+
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import Float32
+
+# ============================================================
+# 씬 구성 상수 (100.py "82~91번과 동일 홀로노믹 베이스 구성" 절과 동일값)
+# ============================================================
+
+DRIVE_STIFFNESS, DRIVE_DAMPING, DRIVE_MAX_FORCE = 0.0, 50.0, 20.0
+BASE_PATH = "/World/HoloBase"
+CHASSIS_PATH = f"{BASE_PATH}/chassis"
+BASE_FACE_ROT_Z = 90.0
+
+ROLLER_COUNT = 9
+ROLLER_MASS = 0.02
+HUB_MASS = 1.0
+CHASSIS_MASS = 15.0
+
+_M0609_DIR = "/home/rokey/2026_ROKEY_Cooperation3_EDU/isaacpjt/M0609"
+M0609_USD = str(f"{_M0609_DIR}/Collected_m0609_vgp20_camera/m0609_vgp20_camera.usd")
+M0609_MOUNT_Z_ABOVE_CHASSIS_TOP = 0.02
+LIFT_COLUMN_RADIUS = 0.045
+
+# 92.trunk_place_holonomic.py/100.py와 동일 - CSV 튜닝 결과 없으면 기본값(0.50,0.50,0.15).
+BASE_LENGTH, BASE_WIDTH, BASE_HEIGHT = 0.50, 0.50, 0.15
+WHEEL_RADIUS = max(0.05, BASE_HEIGHT / 2.0)
+CHASSIS_BODY_HEIGHT = min(BASE_HEIGHT, 2 * WHEEL_RADIUS) * 0.7
+ROLLER_RADIUS = WHEEL_RADIUS * 0.22
+ROLLER_LENGTH = (2 * np.pi * (WHEEL_RADIUS - ROLLER_RADIUS)) / ROLLER_COUNT * 1.15
+HUB_RADIUS = WHEEL_RADIUS - ROLLER_RADIUS * 0.85
+HUB_THICKNESS = WHEEL_RADIUS * 0.55
+CHASSIS_LENGTH_EXTENDED = 1.00
+WHEEL_MOUNT_HALF_L = BASE_LENGTH / 2.0 - WHEEL_RADIUS * 0.6
+_wheel_half_thickness_y = HUB_THICKNESS / 2.0 + ROLLER_LENGTH * 0.5 + ROLLER_RADIUS
+
+# 100.py와 동일 - MEASURED_CHASSIS_TOP_OFFSET은 실측 상수(스크린샷 대조로 확인된 값).
+MEASURED_CHASSIS_TOP_OFFSET = 0.0180
+LIFT_MIN = MEASURED_CHASSIS_TOP_OFFSET + M0609_MOUNT_Z_ABOVE_CHASSIS_TOP
+LIFT_MAX = LIFT_MIN + 0.35  # 100.py와 동일값 - 트렁크 STAGE 3.x가 이 이름을 직접 참조하므로 절대 바꾸지 않는다.
+
+CHASSIS_SPAWN_XY = (0.0, 0.0)
+
+# 리프트가 한 main-loop 반복(world.step() 1회)마다 목표를 향해 움직일 수 있는 최대량(m).
+# 100.py의 move_lift_to(steps=90)이 LIFT_TRAVEL_M(0.75)을 90스텝에 나눠 움직인 것과
+# 비슷한 속도감(약 0.008m/step)이 되도록 잡았다 - ROS 토픽으로 목표가 언제든 바뀔 수
+# 있는 연속 추종 방식이라 move_lift_to처럼 "정해진 스텝 수" 대신 "스텝당 최대 이동량"
+# 으로 표현한다.
+LIFT_MAX_STEP_M = 0.008
+
+
+def quat_between(v_from, v_to):
+    """100.cart_to_trunk_dual_side_holonomic.py와 동일."""
+    v_from = np.array(v_from, dtype=float); v_from = v_from / np.linalg.norm(v_from)
+    v_to = np.array(v_to, dtype=float); v_to = v_to / np.linalg.norm(v_to)
+    dot = float(np.clip(np.dot(v_from, v_to), -1.0, 1.0))
+    if dot > 0.999999:
+        return Gf.Quatf(1.0, 0.0, 0.0, 0.0)
+    if dot < -0.999999:
+        ortho = np.array([1.0, 0.0, 0.0]) if abs(v_from[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        axis = np.cross(v_from, ortho); axis = axis / np.linalg.norm(axis)
+        return Gf.Quatf(0.0, float(axis[0]), float(axis[1]), float(axis[2]))
+    axis = np.cross(v_from, v_to)
+    w = 1.0 + dot
+    q = np.array([w, axis[0], axis[1], axis[2]])
+    q = q / np.linalg.norm(q)
+    return Gf.Quatf(float(q[0]), float(q[1]), float(q[2]), float(q[3]))
+
+
+def build_mecanum_wheel(stage, wheel_root_path, chassis_path, local_pos, wheel_material_path, chirality, name):
+    """100.cart_to_trunk_dual_side_holonomic.py와 동일."""
+    wx, wy, wz = local_pos
+    hub_path = f"{wheel_root_path}/hub"
+    hub = UsdGeom.Cylinder.Define(stage, hub_path)
+    hub.CreateRadiusAttr(HUB_RADIUS)
+    hub.CreateHeightAttr(HUB_THICKNESS)
+    hub.CreateAxisAttr("Y")
+    hub.CreateDisplayColorAttr([Gf.Vec3f(0.2, 0.2, 0.2)])
+    hub_xform = UsdGeom.Xformable(hub)
+    hub_xform.ClearXformOpOrder()
+    hub_xform.AddTranslateOp().Set(Gf.Vec3d(wx, wy, wz))
+    hub_prim = hub.GetPrim()
+    UsdPhysics.RigidBodyAPI.Apply(hub_prim)
+    UsdPhysics.MassAPI.Apply(hub_prim).CreateMassAttr().Set(HUB_MASS)
+
+    hub_joint_path = f"{wheel_root_path}/joint_hub_{name}"
+    hub_joint = UsdPhysics.RevoluteJoint.Define(stage, hub_joint_path)
+    hub_joint.CreateAxisAttr("Y")
+    hub_joint.CreateBody0Rel().SetTargets([Sdf.Path(chassis_path)])
+    hub_joint.CreateBody1Rel().SetTargets([Sdf.Path(hub_path)])
+    hub_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(wx, wy, 0.0))
+    hub_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+    drive = UsdPhysics.DriveAPI.Apply(hub_joint.GetPrim(), "angular")
+    drive.CreateTypeAttr().Set("force")
+    drive.CreateStiffnessAttr().Set(DRIVE_STIFFNESS)
+    drive.CreateDampingAttr().Set(DRIVE_DAMPING)
+    drive.CreateMaxForceAttr().Set(DRIVE_MAX_FORCE)
+    drive.CreateTargetVelocityAttr().Set(0.0)
+
+    for i in range(ROLLER_COUNT):
+        theta = 2 * np.pi * i / ROLLER_COUNT
+        place_r = HUB_RADIUS + ROLLER_RADIUS * 0.7
+        rpos = np.array([place_r * np.cos(theta), 0.0, place_r * np.sin(theta)])
+        tangent = np.array([-np.sin(theta), 0.0, np.cos(theta)])
+        y_hat = np.array([0.0, 1.0, 0.0])
+        roller_axis = tangent + chirality * y_hat
+        roller_axis = roller_axis / np.linalg.norm(roller_axis)
+
+        roller_path = f"{wheel_root_path}/roller_{i}"
+        roller = UsdGeom.Capsule.Define(stage, roller_path)
+        roller.CreateRadiusAttr(ROLLER_RADIUS)
+        roller.CreateHeightAttr(ROLLER_LENGTH)
+        roller.CreateAxisAttr("X")
+        roller.CreateDisplayColorAttr([Gf.Vec3f(0.85, 0.35, 0.05)])
+        quat = quat_between([1.0, 0.0, 0.0], roller_axis)
+        r_xform = UsdGeom.Xformable(roller)
+        r_xform.ClearXformOpOrder()
+        r_xform.AddTranslateOp().Set(Gf.Vec3d(wx + rpos[0], wy + rpos[1], wz + rpos[2]))
+        r_xform.AddOrientOp().Set(quat)
+        r_prim = roller.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(r_prim)
+        UsdPhysics.RigidBodyAPI.Apply(r_prim)
+        UsdPhysics.MassAPI.Apply(r_prim).CreateMassAttr().Set(ROLLER_MASS)
+        UsdShade.MaterialBindingAPI.Apply(r_prim).Bind(
+            UsdShade.Material(stage.GetPrimAtPath(wheel_material_path)), materialPurpose="physics"
+        )
+
+        roller_joint_path = f"{wheel_root_path}/joint_roller_{name}_{i}"
+        rjoint = UsdPhysics.RevoluteJoint.Define(stage, roller_joint_path)
+        rjoint.CreateAxisAttr("X")
+        rjoint.CreateBody0Rel().SetTargets([Sdf.Path(hub_path)])
+        rjoint.CreateBody1Rel().SetTargets([Sdf.Path(roller_path)])
+        rjoint.CreateLocalPos0Attr().Set(Gf.Vec3f(*rpos))
+        rjoint.CreateLocalRot0Attr().Set(quat)
+        rjoint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        rjoint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+    return hub_joint_path
+
+
+def build_holonomic_base(stage, start_xy, length, width, height):
+    """100.cart_to_trunk_dual_side_holonomic.py와 동일."""
+    base_xform = UsdGeom.Xform.Define(stage, BASE_PATH)
+    base_xform.ClearXformOpOrder()
+    base_xform.AddTranslateOp().Set(Gf.Vec3d(start_xy[0], start_xy[1], 0.0))
+    base_xform.AddRotateZOp().Set(BASE_FACE_ROT_Z)
+
+    chassis_root = UsdGeom.Xform.Define(stage, CHASSIS_PATH)
+    chassis_root.ClearXformOpOrder()
+    chassis_root.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, WHEEL_RADIUS))
+    chassis_prim = chassis_root.GetPrim()
+    UsdPhysics.RigidBodyAPI.Apply(chassis_prim)
+    UsdPhysics.MassAPI.Apply(chassis_prim).CreateMassAttr().Set(CHASSIS_MASS)
+    UsdPhysics.ArticulationRootAPI.Apply(chassis_prim)
+
+    chassis_geom = UsdGeom.Cube.Define(stage, f"{CHASSIS_PATH}/geom")
+    chassis_geom.CreateSizeAttr(1.0)
+    chassis_geom_xform = UsdGeom.Xformable(chassis_geom)
+    chassis_geom_xform.ClearXformOpOrder()
+    chassis_geom_xform.AddScaleOp().Set(Gf.Vec3f(CHASSIS_LENGTH_EXTENDED, width, CHASSIS_BODY_HEIGHT))
+    chassis_geom.CreateDisplayColorAttr([Gf.Vec3f(0.25, 0.30, 0.35)])
+    UsdPhysics.CollisionAPI.Apply(chassis_geom.GetPrim())
+
+    wheel_material = PhysicsMaterial(
+        prim_path=f"{BASE_PATH}/roller_material",
+        static_friction=1.0, dynamic_friction=0.9, restitution=0.0,
+    )
+
+    corner_signs = [(1, 1, 1), (1, -1, -1), (-1, 1, -1), (-1, -1, 1)]
+    corner_names = ["FL", "FR", "RL", "RR"]
+    half_l = WHEEL_MOUNT_HALF_L
+    half_w = width / 2.0 + _wheel_half_thickness_y * 1.3
+    hub_joint_paths = []
+
+    for (sx, sy, chirality), name in zip(corner_signs, corner_names):
+        wx, wy, wz = sx * half_l, sy * half_w, 0.0
+        wheel_root_path = f"{BASE_PATH}/wheel_{name}"
+        hub_joint_path = build_mecanum_wheel(stage, wheel_root_path, CHASSIS_PATH, (wx, wy, wz),
+                                              wheel_material.prim_path, chirality, name)
+        hub_joint_paths.append(hub_joint_path)
+
+    k_factor = half_l + half_w
+    return CHASSIS_PATH, hub_joint_paths, k_factor
+
+
+def add_drive_stiffness(stage, root_path, stiffness=1e8, damping=1e4, max_force=1e8):
+    """100.cart_to_trunk_dual_side_holonomic.py와 동일."""
+    n = 0
+    for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+        for dof_type in ["angular", "linear"]:
+            drive = UsdPhysics.DriveAPI.Get(prim, dof_type)
+            if drive:
+                drive.GetStiffnessAttr().Set(stiffness)
+                drive.GetDampingAttr().Set(damping)
+                drive.GetMaxForceAttr().Set(max_force)
+                n += 1
+    return n
+
+
+def mount_m0609(stage, initial_h):
+    """100.cart_to_trunk_dual_side_holonomic.py와 동일."""
+    m0609_path = f"{BASE_PATH}/M0609"
+    m0609_xform = UsdGeom.Xform.Define(stage, m0609_path)
+    m0609_xform.GetPrim().GetReferences().AddReference(M0609_USD, "/World/m0609")
+    m0609_xform.ClearXformOpOrder()
+    m0609_xform.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, initial_h))
+
+    for _ in range(20):
+        simulation_app.update()
+
+    base_link_path = f"{m0609_path}/base_link"
+    root_joint_path = f"{m0609_path}/root_joint"
+    if stage.GetPrimAtPath(root_joint_path).IsValid():
+        stage.RemovePrim(root_joint_path)
+
+    base_link_prim = stage.GetPrimAtPath(base_link_path)
+    UsdPhysics.ArticulationRootAPI.Apply(base_link_prim)
+
+    chassis_prim = stage.GetPrimAtPath(CHASSIS_PATH)
+    filt_chassis = UsdPhysics.FilteredPairsAPI.Apply(chassis_prim)
+    filt_chassis.CreateFilteredPairsRel().AddTarget(Sdf.Path(base_link_path))
+    filt_base = UsdPhysics.FilteredPairsAPI.Apply(base_link_prim)
+    filt_base.CreateFilteredPairsRel().AddTarget(Sdf.Path(CHASSIS_PATH))
+
+    lift_column_path = "/World/LiftColumnVisual"
+    lift_column = UsdGeom.Cylinder.Define(stage, lift_column_path)
+    lift_column.CreateRadiusAttr().Set(LIFT_COLUMN_RADIUS)
+    lift_column.CreateHeightAttr().Set(1.0)
+    lift_column.CreateAxisAttr("Z")
+    lift_column.CreateDisplayColorAttr([Gf.Vec3f(0.85, 0.45, 0.1)])
+    lift_column_xform = UsdGeom.Xformable(lift_column)
+    lift_column_xform.ClearXformOpOrder()
+    lift_translate_op = lift_column_xform.AddTranslateOp()
+    lift_scale_op = lift_column_xform.AddScaleOp()
+    lift_scale_op.Set(Gf.Vec3f(1.0, 1.0, 0.001))
+
+    n = add_drive_stiffness(stage, m0609_path)
+    print(f"[DRIVE] M0609={n}개 조인트 강성 적용, initial_h={initial_h:.3f}", flush=True)
+    return m0609_path, base_link_path, lift_translate_op, lift_scale_op
+
+
+# ============================================================
+# 씬 부트스트랩
+# ============================================================
+
+omni.usd.get_context().new_stage()
+stage = omni.usd.get_context().get_stage()
+
+world = World(stage_units_in_meters=1.0)
+world.scene.add_default_ground_plane()
+
+chassis_path, hub_joint_paths, k_factor = build_holonomic_base(
+    stage, CHASSIS_SPAWN_XY, BASE_LENGTH, BASE_WIDTH, BASE_HEIGHT)
+
+m0609_path, m0609_base_link_path, lift_translate_op, lift_scale_op = mount_m0609(stage, LIFT_MIN)
+
+for _ in range(10):
+    simulation_app.update()
+
+m0609_robot = SingleArticulation(prim_path=m0609_base_link_path, name="m0609_arm")
+base_robot = SingleArticulation(prim_path=chassis_path, name="holo_base")
+
+world.reset()
+base_robot.initialize(physics_sim_view=world.physics_sim_view)
+m0609_robot.initialize(physics_sim_view=world.physics_sim_view)
+
+lift_state = {"h": LIFT_MIN}
+
+
+def set_lift_height(h: float) -> None:
+    """100.cart_to_trunk_dual_side_holonomic.py의 set_lift_height()와 동일 -
+    물리 조인트가 아니라 M0609 베이스를 매 스텝 직접 teleport한다."""
+    chassis_pos, chassis_quat = base_robot.get_world_pose()
+    target_pos = np.array([float(chassis_pos[0]), float(chassis_pos[1]), float(chassis_pos[2]) + h])
+    m0609_robot.set_world_pose(position=target_pos, orientation=chassis_quat)
+    m0609_robot.set_linear_velocity(np.zeros(3))
+    m0609_robot.set_angular_velocity(np.zeros(3))
+    column_base_z = float(chassis_pos[2]) + LIFT_MIN
+    column_len = max(float(h) - LIFT_MIN, 0.001)
+    lift_scale_op.Set(Gf.Vec3f(1.0, 1.0, column_len))
+    lift_translate_op.Set(Gf.Vec3d(float(chassis_pos[0]), float(chassis_pos[1]), column_base_z + column_len / 2.0))
+
+
+# ============================================================
+# ROS 2 인터페이스 (표준 메시지만)
+# ============================================================
+
+class PlatformControllerNode(Node):
+
+    def __init__(self):
+        super().__init__("platform_controller_node")
+        self._target_h = LIFT_MIN
+        self.create_subscription(Float32, "/lift/move", self._on_lift_move, 10)
+        self._state_pub = self.create_publisher(Float32, "/lift/state", 10)
+        self.get_logger().info(
+            f"platform_controller_node ready (lift only) - LIFT_MIN={LIFT_MIN:.3f} LIFT_MAX={LIFT_MAX:.3f}"
+        )
+
+    def _on_lift_move(self, msg: Float32) -> None:
+        clamped = float(np.clip(msg.data, LIFT_MIN, LIFT_MAX))
+        if clamped != msg.data:
+            self.get_logger().warn(
+                f"/lift/move 목표({msg.data:.3f})가 범위[{LIFT_MIN:.3f},{LIFT_MAX:.3f}] 밖 - {clamped:.3f}로 클램프"
+            )
+        self._target_h = clamped
+
+    def step_lift_toward_target(self) -> None:
+        current = lift_state["h"]
+        delta = float(np.clip(self._target_h - current, -LIFT_MAX_STEP_M, LIFT_MAX_STEP_M))
+        lift_state["h"] = current + delta
+        set_lift_height(lift_state["h"])
+
+    def publish_state(self) -> None:
+        msg = Float32()
+        msg.data = float(lift_state["h"])
+        self._state_pub.publish(msg)
+
+
+def main():
+    rclpy.init()
+    node = PlatformControllerNode()
+
+    publish_every_n = 10
+    i = 0
+    try:
+        while simulation_app.is_running():
+            rclpy.spin_once(node, timeout_sec=0.0)
+            node.step_lift_toward_target()
+            world.step(render=True)
+            i += 1
+            if i % publish_every_n == 0:
+                node.publish_state()
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+        simulation_app.close()
+
+
+if __name__ == "__main__":
+    main()
