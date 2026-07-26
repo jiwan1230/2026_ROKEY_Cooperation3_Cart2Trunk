@@ -129,9 +129,14 @@ from isaacsim.core.utils.types import ArticulationAction
 from isaacsim.robot.manipulators.grippers.surface_gripper import SurfaceGripper
 
 # HANDOFF_MSI2.md 2.3절 - M0609 자산(RMPflow/URDF/그리퍼 USD)은 git에 없고 PC마다
-# 로컬 경로가 다르다(레노버 백업 위치와 실제 MSI2 로컬 사본 위치가 서로 다름이
-# 실측 확인됨) - 하드코딩 대신 CART2TRUNK_M0609_DIR 환경변수로 받는다.
-_M0609_DIR = os.environ.get("CART2TRUNK_M0609_DIR", "/home/rokey/2026_ROKEY_Cooperation3_EDU/isaacpjt/M0609")
+# 로컬 경로가 다르다 - 하드코딩 대신 CART2TRUNK_M0609_DIR 환경변수로 받는다.
+# 기본값은 이 PC에서 실제로 검증된 사본(git으로 관리되는 살아있는 작업본 -
+# .../isaacpjt/M0609/.git, 그리퍼 바디 prim이 GRIPPER_BODY_NAME 기본값
+# "vgp20_suction_plate"와 정확히 일치함. /home/rokey/M0609_env.tar.gz에서 뽑은
+# 사본은 이름이 "vgp20"으로 달라서 한때 CART2TRUNK_GRIPPER_BODY_NAME 오버라이드가
+# 필요했었는데, 이 사본을 쓰면 필요 없다 - 오버라이드 자체는 다른 PC/사본
+# 대비용으로 남겨둔다).
+_M0609_DIR = os.environ.get("CART2TRUNK_M0609_DIR", "/home/rokey/cobot3_ws/isaacpjt/M0609")
 _RMPFLOW_DIR = str(Path(_M0609_DIR) / "rmpflow")
 if _RMPFLOW_DIR not in sys.path:
     sys.path.insert(0, _RMPFLOW_DIR)
