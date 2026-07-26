@@ -1,9 +1,31 @@
-"""MSI2(Isaac Sim PC): 하드웨어 제어 계층 - 리프트 + 모바일 베이스(홀로노믹) + 그리퍼.
+"""MSI2(Isaac Sim PC): 하드웨어 제어 계층 - 리프트 + 모바일 베이스(홀로노믹) + 그리퍼 + M0609(RMPflow).
 
 Isaac Sim은 물리 프림/Articulation 핸들을 하나의 프로세스 안에서만 공유할 수 있어서,
 mobile_base/lift/m0609/gripper 컨트롤러를 별도 `ros2 run` 프로세스로 쪼갤 수 없다 -
 전부 이 노드(`isaac_python`으로 실행하는 하나의 SimulationApp 프로세스) 안에서 살아야
-한다. m0609(RMPflow)는 이후 이 파일에 이어 붙인다.
+한다. 이걸로 platform 4종(lift/mobile_base/gripper/m0609)이 전부 이 파일 하나에
+모였다.
+
+[M0609은 link_6 목표 자세를 RMPflow IK로 계속 추종하는 방식]
+100.cart_to_trunk_dual_side_holonomic.py의 move_link6()/move_link6_smooth()가 매
+스텝 하던 걸 그대로 가져왔다: sync_rmp_base()(리프트/모바일베이스가 매 스텝 움직이므로
+RMPflow가 아는 "로봇 베이스 위치"도 매 스텝 다시 맞춰야 함) -> controller.forward(목표
+link_6 자세) -> m0609_robot.apply_action(). move_link6_smooth()의 "그리퍼 팁 자체를
+폐루프로 제어"(link_6과 흡착 팁 사이 실측 13cm+ 오프셋 보정 + 정체 감지)는 옮기지
+않았다 - README 원칙대로 그건 cart2trunk_motion이 이 노드의 /m0609/move_to_pose +
+/m0609/state를 반복 호출해서 구현할 몫이다(모바일베이스의 drive_to()와 같은 이유).
+이 노드는 "지금 이 link_6 자세로 IK를 계속 풀어라"까지만 한다.
+
+[RMPflow가 가끔 목표에서 크게 벗어난 채 멈추는 현상 - 버그 아님, 알려진 특성]
+실측 확인: 어떤 시작 자세에서 특정 목표(예: 같은 자세로 z만 +10cm)를 주면 크게
+못 미친 채(수십 cm 오차) 정지하는 경우가 있었다 - 반면 훨씬 큰 목표(전혀 다른
+위치/자세)나 작은 목표(z +2cm)는 수 mm 오차로 정확히 수렴했다. 이건 이 노드의
+배선 문제가 아니라 RMPflow(반응형 potential-field 컨트롤러)가 특이점 근처에서
+지역 최소값에 걸리는 문제로, 100.cart_to_trunk_dual_side_holonomic.py 자신이
+"조인트3/5 반전으로 반대쪽 solution branch를 쓰게 강제"하는 로직을 대규모로
+설계해서 대응한, 이 팔+RMPflow 조합의 이미 알려진 특성이다. 좋은 중간 웨이포인트를
+거쳐가서 이런 지역 최소값을 피하는 건 이 저수준 노드가 아니라 cart2trunk_motion이
+할 일이다.
 
 [그리퍼 검증용 테스트 박스]
 DynamicSuctionGripper.close()는 set_target()으로 미리 지정한 프림에 대해서만
@@ -55,6 +77,8 @@ EDU 저장소 100.cart_to_trunk_dual_side_holonomic.py에서 그대로 가져왔
     /gripper/activate   (std_srvs/Trigger, service)        - 흡착 시도(기하 조건 안 맞으면 실패 반환)
     /gripper/release    (std_srvs/Trigger, service)        - 흡착 해제
     /gripper/state      (std_msgs/Bool, publish)           - true=흡착 중
+    /m0609/move_to_pose (geometry_msgs/PoseStamped, subscribe) - link_6 목표 world pose(RMPflow IK)
+    /m0609/state        (geometry_msgs/PoseStamped, publish)   - 현재 link_6 world pose
 
 실행:
     HEADLESS=1 isaac_python platform_controller_node.py
@@ -98,8 +122,15 @@ from isaacsim.core.api import World
 from isaacsim.core.api.materials.physics_material import PhysicsMaterial
 from isaacsim.core.api.objects import FixedCuboid
 from isaacsim.core.prims import SingleArticulation
+from isaacsim.core.utils.rotations import euler_angles_to_quat
 from isaacsim.core.utils.types import ArticulationAction
 from isaacsim.robot.manipulators.grippers.surface_gripper import SurfaceGripper
+
+_M0609_DIR = "/home/rokey/2026_ROKEY_Cooperation3_EDU/isaacpjt/M0609"
+_RMPFLOW_DIR = str(Path(_M0609_DIR) / "rmpflow")
+if _RMPFLOW_DIR not in sys.path:
+    sys.path.insert(0, _RMPFLOW_DIR)
+from m0609_rmpflow_controller import RMPFlowController  # noqa: E402
 
 import rclpy
 from rclpy.node import Node
@@ -121,8 +152,10 @@ ROLLER_MASS = 0.02
 HUB_MASS = 1.0
 CHASSIS_MASS = 15.0
 
-_M0609_DIR = "/home/rokey/2026_ROKEY_Cooperation3_EDU/isaacpjt/M0609"
 M0609_USD = str(f"{_M0609_DIR}/Collected_m0609_vgp20_camera/m0609_vgp20_camera.usd")
+M0609_URDF_PATH = str(Path(_M0609_DIR) / "doosan-robot2" / "urdf" / "m0609_isaac_sim.urdf")
+M0609_DESCRIPTION_PATH = str(Path(_M0609_DIR) / "rmpflow" / "m0609_description.yaml")
+M0609_RMPFLOW_CONFIG_PATH = str(Path(_M0609_DIR) / "rmpflow" / "m0609_rmpflow_common.yaml")
 M0609_MOUNT_Z_ABOVE_CHASSIS_TOP = 0.02
 LIFT_COLUMN_RADIUS = 0.045
 
@@ -540,6 +573,39 @@ gripper.set_target(
 print(f"[그리퍼] 테스트 박스를 팁 위치({_tip_world}) 바로 아래에 배치, target 등록 완료", flush=True)
 
 
+# ---------------- M0609 팔 (RMPflow) ----------------
+controller = RMPFlowController(
+    name="m0609_rmpflow", robot_articulation=m0609_robot, physics_dt=1.0 / 60.0,
+    urdf_path=M0609_URDF_PATH, robot_description_path=M0609_DESCRIPTION_PATH,
+    rmpflow_config_path=M0609_RMPFLOW_CONFIG_PATH, end_effector_frame_name=EE_LINK_NAME,
+)
+
+
+def sync_rmp_base() -> None:
+    """100.cart_to_trunk_dual_side_holonomic.py와 동일 - 리프트/모바일베이스가 매 스텝
+    M0609 베이스를 움직이므로, RMPflow가 아는 "로봇 베이스가 어디 있는지"도 매 스텝
+    다시 맞춰야 IK가 엉뚱한 기준으로 풀리지 않는다."""
+    chassis_pos, chassis_quat = base_robot.get_world_pose()
+    base_pos = np.array([float(chassis_pos[0]), float(chassis_pos[1]), float(chassis_pos[2]) + lift_state["h"]])
+    controller._default_position = base_pos
+    controller._default_orientation = chassis_quat
+    controller.rmp_flow.set_robot_base_pose(robot_position=base_pos, robot_orientation=chassis_quat)
+
+
+def _ee_world_pose():
+    ee_prim = stage.GetPrimAtPath(ee_path)
+    mat = UsdGeom.Xformable(ee_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    position = np.array(mat.ExtractTranslation(), dtype=float)
+    q = mat.ExtractRotationQuat()
+    imag = q.GetImaginary()
+    quat_wxyz = np.array([q.GetReal(), imag[0], imag[1], imag[2]], dtype=float)
+    return position, quat_wxyz
+
+
+# 시작 시점의 실제 link_6 자세를 초기 목표로 잡는다 - 그래야 노드가 뜨자마자 임의
+# 위치로 팔이 튀지 않고, 실제 /m0609/move_to_pose 명령이 올 때까지 제자리를 유지한다.
+_initial_ee_pos, _initial_ee_quat_wxyz = _ee_world_pose()
+
 # ============================================================
 # ROS 2 인터페이스 (표준 메시지만)
 # ============================================================
@@ -566,8 +632,13 @@ class PlatformControllerNode(Node):
         self.create_service(Trigger, "/gripper/release", self._on_gripper_release)
         self._gripper_state_pub = self.create_publisher(Bool, "/gripper/state", 10)
 
+        self._m0609_target_pos = _initial_ee_pos
+        self._m0609_target_quat_wxyz = _initial_ee_quat_wxyz
+        self.create_subscription(PoseStamped, "/m0609/move_to_pose", self._on_m0609_move_to_pose, 10)
+        self._m0609_state_pub = self.create_publisher(PoseStamped, "/m0609/state", 10)
+
         self.get_logger().info(
-            f"platform_controller_node ready (lift + mobile_base + gripper) - "
+            f"platform_controller_node ready (lift + mobile_base + gripper + m0609) - "
             f"LIFT_MIN={LIFT_MIN:.3f} LIFT_MAX={LIFT_MAX:.3f}"
         )
 
@@ -632,6 +703,36 @@ class PlatformControllerNode(Node):
         msg.data = gripper.is_closed()
         self._gripper_state_pub.publish(msg)
 
+    def _on_m0609_move_to_pose(self, msg: PoseStamped) -> None:
+        p = msg.pose.position
+        o = msg.pose.orientation
+        self._m0609_target_pos = np.array([p.x, p.y, p.z], dtype=float)
+        # ROS geometry_msgs 쿼터니언(x,y,z,w) -> Isaac Sim 관례(w,x,y,z).
+        self._m0609_target_quat_wxyz = np.array([o.w, o.x, o.y, o.z], dtype=float)
+
+    def apply_m0609_target(self) -> None:
+        sync_rmp_base()
+        actions = controller.forward(
+            target_end_effector_position=self._m0609_target_pos,
+            target_end_effector_orientation=self._m0609_target_quat_wxyz,
+        )
+        m0609_robot.apply_action(actions)
+
+    def publish_m0609_state(self) -> None:
+        pos, quat_wxyz = _ee_world_pose()
+        msg = PoseStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "world"
+        msg.pose.position.x = float(pos[0])
+        msg.pose.position.y = float(pos[1])
+        msg.pose.position.z = float(pos[2])
+        w, x, y, z = quat_wxyz
+        msg.pose.orientation.x = float(x)
+        msg.pose.orientation.y = float(y)
+        msg.pose.orientation.z = float(z)
+        msg.pose.orientation.w = float(w)
+        self._m0609_state_pub.publish(msg)
+
 
 def main():
     rclpy.init()
@@ -644,12 +745,14 @@ def main():
             rclpy.spin_once(node, timeout_sec=0.0)
             node.step_lift_toward_target()
             node.apply_cmd_vel()
+            node.apply_m0609_target()
             world.step(render=True)
             i += 1
             if i % publish_every_n == 0:
                 node.publish_lift_state()
                 node.publish_base_state()
                 node.publish_gripper_state()
+                node.publish_m0609_state()
     finally:
         node.destroy_node()
         rclpy.shutdown()
