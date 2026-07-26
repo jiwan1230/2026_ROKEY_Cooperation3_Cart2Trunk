@@ -1,10 +1,17 @@
-"""MSI2(Isaac Sim PC): 하드웨어 제어 계층의 1차 슬라이스 - 리프트만.
+"""MSI2(Isaac Sim PC): 하드웨어 제어 계층 - 리프트 + 모바일 베이스(홀로노믹).
 
 Isaac Sim은 물리 프림/Articulation 핸들을 하나의 프로세스 안에서만 공유할 수 있어서,
 mobile_base/lift/m0609/gripper 컨트롤러를 별도 `ros2 run` 프로세스로 쪼갤 수 없다 -
 전부 이 노드(`isaac_python`으로 실행하는 하나의 SimulationApp 프로세스) 안에서 살아야
-한다. 지금은 그 중 리프트만 구현했다(mobile_base/m0609/gripper는 이후 이 파일에
-이어 붙인다).
+한다. m0609/gripper는 이후 이 파일에 이어 붙인다.
+
+[모바일 베이스는 "저수준 속도 제어"까지만 - "목표 지점으로 주행"은 여기 없음]
+100.py의 drive_to()/drive_until()(비례제어+정체감지+속도 스무딩으로 목표 (x,y,yaw)까지
+주행)은 일부러 옮기지 않았다 - README 설계 원칙(cart2trunk_platform=저수준 명령
+수신, cart2trunk_motion=platform 컨트롤러를 조합한 작업 단위)대로, "목표 지점까지
+주행"은 이 노드의 /mobile_base/cmd_vel + /mobile_base/state를 조합해 상위 계층
+(cart2trunk_motion)이 구현해야 할 몫이다. 이 노드는 순수 속도 명령 수신 + 상태
+발행만 한다.
 
 [ROS2 인터페이스는 표준 메시지만 쓴다 - 중요한 설계 결정]
 Isaac Sim 번들 파이썬은 3.11인데 시스템 ROS2 Humble(cart2trunk_interfaces가 빌드된
@@ -31,8 +38,11 @@ EDU 저장소 100.cart_to_trunk_dual_side_holonomic.py에서 그대로 가져왔
 가 이 접근의 이름 그대로다). set_lift_height()가 그 로직이다.
 
 인터페이스:
-    /lift/move  (std_msgs/Float32, subscribe) - 목표 높이(LIFT_MIN~LIFT_MAX로 클램프)
-    /lift/state (std_msgs/Float32, publish)   - 현재 높이
+    /lift/move          (std_msgs/Float32, subscribe)     - 목표 높이(LIFT_MIN~LIFT_MAX로 클램프)
+    /lift/state         (std_msgs/Float32, publish)        - 현재 높이
+    /mobile_base/cmd_vel (geometry_msgs/Twist, subscribe)  - 로봇 로컬 프레임 속도(linear.x=vx,
+                                                              linear.y=vy, angular.z=wz)
+    /mobile_base/state  (geometry_msgs/PoseStamped, publish) - 현재 섀시 world pose
 
 실행:
     HEADLESS=1 isaac_python platform_controller_node.py
@@ -65,6 +75,8 @@ if os.path.isdir(_ROS2_BRIDGE_HUMBLE):
     os.environ["LD_LIBRARY_PATH"] = lib_dir + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
 os.environ.setdefault("RMW_IMPLEMENTATION", "rmw_fastrtps_cpp")
 
+from pathlib import Path
+
 import numpy as np
 import omni.usd
 from pxr import Usd, UsdGeom, UsdPhysics, UsdShade, Sdf, Gf
@@ -72,10 +84,12 @@ from pxr import Usd, UsdGeom, UsdPhysics, UsdShade, Sdf, Gf
 from isaacsim.core.api import World
 from isaacsim.core.api.materials.physics_material import PhysicsMaterial
 from isaacsim.core.prims import SingleArticulation
+from isaacsim.core.utils.types import ArticulationAction
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32
+from geometry_msgs.msg import Twist, PoseStamped
 
 # ============================================================
 # 씬 구성 상수 (100.py "82~91번과 동일 홀로노믹 베이스 구성" 절과 동일값)
@@ -121,6 +135,18 @@ CHASSIS_SPAWN_XY = (0.0, 0.0)
 # 있는 연속 추종 방식이라 move_lift_to처럼 "정해진 스텝 수" 대신 "스텝당 최대 이동량"
 # 으로 표현한다.
 LIFT_MAX_STEP_M = 0.008
+
+
+def mecanum_wheel_speeds(vx, vy, wz, wheel_radius, k):
+    """100.cart_to_trunk_dual_side_holonomic.py와 동일 - 로봇 로컬 프레임 속도(vx,vy,wz)를
+    4개 허브 조인트의 목표 각속도로 변환한다."""
+    vy = -vy
+    return [
+        (vx - vy - k * wz) / wheel_radius,
+        (vx + vy + k * wz) / wheel_radius,
+        (vx + vy - k * wz) / wheel_radius,
+        (vx - vy + k * wz) / wheel_radius,
+    ]
 
 
 def quat_between(v_from, v_to):
@@ -338,6 +364,16 @@ world.reset()
 base_robot.initialize(physics_sim_view=world.physics_sim_view)
 m0609_robot.initialize(physics_sim_view=world.physics_sim_view)
 
+hub_dof_indices = [base_robot.dof_names.index(Path(p).name) for p in hub_joint_paths]
+
+
+def holo_forward(vx: float, vy: float, wz: float) -> ArticulationAction:
+    """100.cart_to_trunk_dual_side_holonomic.py와 동일 - 로봇 로컬 프레임 속도(vx,vy,wz)
+    -> 4개 허브 조인트 목표 각속도 ArticulationAction."""
+    speeds = mecanum_wheel_speeds(vx, vy, wz, WHEEL_RADIUS, k_factor)
+    return ArticulationAction(joint_velocities=speeds, joint_indices=hub_dof_indices)
+
+
 lift_state = {"h": LIFT_MIN}
 
 
@@ -359,15 +395,27 @@ def set_lift_height(h: float) -> None:
 # ROS 2 인터페이스 (표준 메시지만)
 # ============================================================
 
+# 100.py의 drive_to() 기본값(max_speed=0.4, max_wz=0.2)과 같은 안전 상한 - cmd_vel로
+# 직접 뭐가 들어와도 이 이상은 못 나가게 막는다(저수준 컨트롤러의 책임).
+MOBILE_BASE_MAX_LINEAR_MPS = 0.4
+MOBILE_BASE_MAX_ANGULAR_RADPS = 0.2
+
+
 class PlatformControllerNode(Node):
 
     def __init__(self):
         super().__init__("platform_controller_node")
         self._target_h = LIFT_MIN
         self.create_subscription(Float32, "/lift/move", self._on_lift_move, 10)
-        self._state_pub = self.create_publisher(Float32, "/lift/state", 10)
+        self._lift_state_pub = self.create_publisher(Float32, "/lift/state", 10)
+
+        self._cmd_vel = (0.0, 0.0, 0.0)
+        self.create_subscription(Twist, "/mobile_base/cmd_vel", self._on_cmd_vel, 10)
+        self._base_state_pub = self.create_publisher(PoseStamped, "/mobile_base/state", 10)
+
         self.get_logger().info(
-            f"platform_controller_node ready (lift only) - LIFT_MIN={LIFT_MIN:.3f} LIFT_MAX={LIFT_MAX:.3f}"
+            f"platform_controller_node ready (lift + mobile_base) - "
+            f"LIFT_MIN={LIFT_MIN:.3f} LIFT_MAX={LIFT_MAX:.3f}"
         )
 
     def _on_lift_move(self, msg: Float32) -> None:
@@ -384,10 +432,35 @@ class PlatformControllerNode(Node):
         lift_state["h"] = current + delta
         set_lift_height(lift_state["h"])
 
-    def publish_state(self) -> None:
+    def publish_lift_state(self) -> None:
         msg = Float32()
         msg.data = float(lift_state["h"])
-        self._state_pub.publish(msg)
+        self._lift_state_pub.publish(msg)
+
+    def _on_cmd_vel(self, msg: Twist) -> None:
+        vx = float(np.clip(msg.linear.x, -MOBILE_BASE_MAX_LINEAR_MPS, MOBILE_BASE_MAX_LINEAR_MPS))
+        vy = float(np.clip(msg.linear.y, -MOBILE_BASE_MAX_LINEAR_MPS, MOBILE_BASE_MAX_LINEAR_MPS))
+        wz = float(np.clip(msg.angular.z, -MOBILE_BASE_MAX_ANGULAR_RADPS, MOBILE_BASE_MAX_ANGULAR_RADPS))
+        self._cmd_vel = (vx, vy, wz)
+
+    def apply_cmd_vel(self) -> None:
+        base_robot.apply_action(holo_forward(*self._cmd_vel))
+
+    def publish_base_state(self) -> None:
+        pos, quat_wxyz = base_robot.get_world_pose()
+        msg = PoseStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "world"
+        msg.pose.position.x = float(pos[0])
+        msg.pose.position.y = float(pos[1])
+        msg.pose.position.z = float(pos[2])
+        # Isaac Sim 쿼터니언은 (w,x,y,z) 관례, ROS geometry_msgs는 (x,y,z,w) 관례.
+        w, x, y, z = quat_wxyz
+        msg.pose.orientation.x = float(x)
+        msg.pose.orientation.y = float(y)
+        msg.pose.orientation.z = float(z)
+        msg.pose.orientation.w = float(w)
+        self._base_state_pub.publish(msg)
 
 
 def main():
@@ -400,10 +473,12 @@ def main():
         while simulation_app.is_running():
             rclpy.spin_once(node, timeout_sec=0.0)
             node.step_lift_toward_target()
+            node.apply_cmd_vel()
             world.step(render=True)
             i += 1
             if i % publish_every_n == 0:
-                node.publish_state()
+                node.publish_lift_state()
+                node.publish_base_state()
     finally:
         node.destroy_node()
         rclpy.shutdown()
