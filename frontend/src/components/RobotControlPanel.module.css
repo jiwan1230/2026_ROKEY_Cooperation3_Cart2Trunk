@@ -1,6 +1,21 @@
 /* src/components/RobotControlPanel.module.css */
-.panel { display: flex; gap: 16px; padding: 20px; height: 100%; min-height: 0; }
+.panel {
+  display: grid; gap: 16px; padding: 20px; height: 100%; min-height: 0;
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: 1fr 1fr;
+  grid-template-areas:
+    "trunk  trunk  cart   cart"
+    "camera pick   pick   log";
+}
+.trunk { grid-area: trunk; }
+.cart { grid-area: cart; }
+.camera { grid-area: camera; }
+.pick { grid-area: pick; }
+.log { grid-area: log; }
 
 @media (max-width: 1100px) {
-  .panel { flex-direction: column; }
+  .panel {
+    grid-template-columns: 1fr;
+    grid-template-areas: "trunk" "cart" "camera" "pick" "log";
+  }
 }
