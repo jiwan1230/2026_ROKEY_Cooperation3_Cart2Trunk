@@ -515,6 +515,18 @@ world.reset()
 base_robot.initialize(physics_sim_view=world.physics_sim_view)
 m0609_robot.initialize(physics_sim_view=world.physics_sim_view)
 
+# 100.cart_to_trunk_dual_side_holonomic.py와 동일 - USD 기본 관절값(전부 0도)은
+# 이 팔+RMPflow 조합에 특이점에 가까운 자세라, 그대로 두고 RMPflow에게 "이
+# 자세를 유지해라"라고 시키면 팔이 계속 불안정하게 튄다(실측 확인 - 섀시/
+# 리프트는 완벽히 정지해 있는데 팔만 흔들림). 100.py가 조인트3/5를 90도로
+# 미리 꺾어 특이점을 피한 자세에서 시작하는 것과 동일하게 맞춘다.
+_init_joints = np.zeros(m0609_robot.num_dof)
+if "joint_3" in m0609_robot.dof_names:
+    _init_joints[m0609_robot.dof_names.index("joint_3")] = np.pi / 2
+if "joint_5" in m0609_robot.dof_names:
+    _init_joints[m0609_robot.dof_names.index("joint_5")] = np.pi / 2
+m0609_robot.set_joint_positions(_init_joints)
+
 hub_dof_indices = [base_robot.dof_names.index(Path(p).name) for p in hub_joint_paths]
 
 
@@ -781,6 +793,18 @@ class PlatformControllerNode(Node):
         self._gripper_tip_pose_pub.publish(msg)
 
 
+# EDU 저장소 100.cart_to_trunk_dual_side_holonomic.py에 2026-07-27 실측 확인된
+# 문제와 동일 원인: 매 스텝 world.step(render=True)로 "물리 스텝 + 화면 렌더링"을
+# 항상 같이 하면 렌더링 비용 때문에 한 스텝의 실제 소요 시간이 크게 늘어난다.
+# 물리는 결과/RMPflow 수렴 판정에 필요해서 매 스텝 반드시 진행해야 하지만
+# 렌더링은 그렇지 않다 - 이 노드에는 아직 카메라 센서도 없어서(cart2trunk_simulation
+# 이관 전) 화면에 표시할 것 자체가 없다. 물리는 계속 매 스텝 진행하되(world.step()
+# 자체는 매번 호출) 렌더링만 HEADLESS가 아닐 때 RENDER_EVERY_N_STEPS 스텝에 한
+# 번으로 줄인다(100.py의 RENDER_EVERY_N_STEPS=4와 동일값) - HEADLESS면 위
+# 워밍업 루프(world.step(render=not HEADLESS))와 동일하게 아예 렌더링 안 함.
+RENDER_EVERY_N_STEPS = 4
+
+
 def main():
     rclpy.init()
     node = PlatformControllerNode()
@@ -793,7 +817,8 @@ def main():
             node.step_lift_toward_target()
             node.apply_cmd_vel()
             node.apply_m0609_target()
-            world.step(render=True)
+            should_render = (not HEADLESS) and (i % RENDER_EVERY_N_STEPS == 0)
+            world.step(render=should_render)
             i += 1
             if i % publish_every_n == 0:
                 node.publish_lift_state()
