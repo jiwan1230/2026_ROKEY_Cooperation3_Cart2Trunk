@@ -69,4 +69,26 @@ describe("ScanViewerPanel", () => {
     fireEvent.click(screen.getByTestId("trigger-cart"));
     await waitFor(() => expect(screen.getByTestId("status-cart").textContent).toBe("대기"));
   });
+
+  it("성공하면 onLog가 완료 메시지로 호출된다", async () => {
+    vi.spyOn(client, "postTrunkScan").mockResolvedValue({ status: "ok", dummy: true, message: "완료" });
+    const onLog = vi.fn();
+
+    render(<ScanViewerPanel kind="trunk" onLog={onLog} />);
+    fireEvent.click(screen.getByTestId("trigger-trunk"));
+    await waitFor(() => expect(screen.getByTestId("status-trunk").textContent).toBe("완료"));
+
+    expect(onLog).toHaveBeenCalledWith("트렁크 스캔 완료");
+  });
+
+  it("실패하면 onLog가 오류 메시지로 호출된다", async () => {
+    vi.spyOn(client, "postCartScan").mockRejectedValue(new Error("네트워크 오류"));
+    const onLog = vi.fn();
+
+    render(<ScanViewerPanel kind="cart" onLog={onLog} />);
+    fireEvent.click(screen.getByTestId("trigger-cart"));
+    await waitFor(() => expect(screen.getByTestId("status-cart").textContent).toBe("대기"));
+
+    expect(onLog).toHaveBeenCalledWith("[오류] 카트 스캔 요청 실패");
+  });
 });

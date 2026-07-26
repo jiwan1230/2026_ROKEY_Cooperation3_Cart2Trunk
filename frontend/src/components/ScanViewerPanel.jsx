@@ -60,7 +60,7 @@ const SCENE_CONTENT = {
   cart: { raw: RawCartPreview, processed: ProcessedCartPreview },
 };
 
-export default function ScanViewerPanel({ kind }) {
+export default function ScanViewerPanel({ kind, onLog = () => {} }) {
   const [status, setStatus] = useState("idle");
   const [viewMode, setViewMode] = useState("raw");
 
@@ -72,8 +72,10 @@ export default function ScanViewerPanel({ kind }) {
       // 더미 message 내용은 쓰지 않는다.
       await callScanTrigger(kind);
       setStatus("done");
+      onLog(`${KIND_LABELS[kind]} 완료`);
     } catch {
       setStatus("idle");
+      onLog(`[오류] ${KIND_LABELS[kind]} 요청 실패`);
     }
   };
 
