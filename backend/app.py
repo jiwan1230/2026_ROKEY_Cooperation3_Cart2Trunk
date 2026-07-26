@@ -27,6 +27,9 @@ def create_app():
     from routes.robot import robot_bp
     app.register_blueprint(robot_bp)
 
+    from routes.scenarios import scenarios_bp
+    app.register_blueprint(scenarios_bp)
+
     @app.errorhandler(ApiError)
     def handle_api_error(err):
         return err.to_response()
