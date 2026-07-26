@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchTrunkMaps, postPlan, postCartScan, postTrunkScan, postPickAndPlace } from "./client.js";
+import { fetchTrunkMaps, postPlan, postCartScan, postTrunkScan, postPickAndPlace, postScenarioPlan } from "./client.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -45,5 +45,14 @@ describe("api client", () => {
       json: async () => ({ error_code: "ROBOT_TRIGGER_FAILED", cause: "실패", action: "재시도하세요" }),
     }));
     await expect(postPickAndPlace()).rejects.toMatchObject({ error_code: "ROBOT_TRIGGER_FAILED" });
+  });
+
+  it("postScenarioPlan posts to /api/scenarios/<id>/plan", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true, json: async () => ({ label: "위험물 창고", trunk: {}, placed: [], unloadable: [], summary: {} }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await postScenarioPlan("hazmat");
+    expect(fetchMock).toHaveBeenCalledWith("/api/scenarios/hazmat/plan", expect.objectContaining({ method: "POST" }));
   });
 });
