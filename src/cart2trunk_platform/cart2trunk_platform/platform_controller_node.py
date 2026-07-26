@@ -142,6 +142,19 @@ if _RMPFLOW_DIR not in sys.path:
     sys.path.insert(0, _RMPFLOW_DIR)
 from m0609_rmpflow_controller import RMPFlowController  # noqa: E402
 
+# cart2trunk_simulation은 colcon으로 빌드된 시스템 python3.10 site-packages에
+# 설치되는데, 이 프로세스는 Isaac Sim 번들 python3.11이라 그 경로가 안 보인다
+# (M0609_DIR과 다른 문제 - 이건 "PC마다 자산 위치가 다르다"가 아니라 "인터프리터
+# 자체가 다르다"는 문제라 환경변수가 아니라 이 파일 기준 상대경로로 src/ 트리를
+# 직접 잡는다 - cart2trunk_simulation의 core 모듈은 rclpy 없이 pxr/isaacsim/numpy만
+# 쓰므로 3.10용으로 빌드된 결과물이 아니라 소스를 그대로 3.11에서 import해도 된다).
+_SRC_DIR = Path(__file__).resolve().parents[2]
+_CART2TRUNK_SIMULATION_SRC = _SRC_DIR / "cart2trunk_simulation"
+if str(_CART2TRUNK_SIMULATION_SRC) not in sys.path:
+    sys.path.insert(0, str(_CART2TRUNK_SIMULATION_SRC))
+from cart2trunk_simulation.core.cart_scene import build_cart_with_boxes  # noqa: E402
+from cart2trunk_simulation.core.vehicle_scene import build_vehicle  # noqa: E402
+
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool, Float32
@@ -187,6 +200,24 @@ LIFT_MIN = MEASURED_CHASSIS_TOP_OFFSET + M0609_MOUNT_Z_ABOVE_CHASSIS_TOP
 LIFT_MAX = LIFT_MIN + 0.35  # 100.py와 동일값 - 트렁크 STAGE 3.x가 이 이름을 직접 참조하므로 절대 바꾸지 않는다.
 
 CHASSIS_SPAWN_XY = (0.0, 0.0)
+
+# ---------------- cart2trunk_simulation - 카트/차량(트렁크) 씬 ----------------
+# 100.py의 CART_USD/CAR_USD와 동일한 usdz 에셋(git에 커밋 안 함 - M0609 자산과
+# 같은 이유, .gitignore에 *.usdz 추가됨) - 이 PC에서 확인된 경로를 기본값으로,
+# 다른 PC/사본 대비 환경변수로 덮어쓸 수 있게 한다.
+_ASSET_DIR = os.environ.get("CART2TRUNK_ASSET_DIR", "/home/rokey/cobot3_ws/isaacpjt/Cart2Trunk/assets")
+CART_USD = str(Path(_ASSET_DIR) / "Metal_Shopping_Cart.usdz")
+CAR_USD = str(Path(_ASSET_DIR) / "Lexus_IS300_Trunk_Open_No_More_Hell_Room.usdz")
+# ⚠️ 아래 두 위치는 "카트 옆 standoff까지 실제로 주행해서 접근"하는 100.py의
+# CART_CLEAR_X/CART_BASE_LEFT_XY 같은 계산을 이관하지 않고, 그냥 로봇 스폰
+# 위치(CHASSIS_SPAWN_XY) 근처의 비어있는 좌표에 배치만 한 값이다(카트/차량이
+# "물리적으로 존재하고 depth 카메라로 스캔 가능하다"까지만 이번 슬라이스의
+# 목표 - cart2trunk_motion이 실제로 카트 옆으로 이동하는 로직을 구현할 때
+# 다시 튜닝해야 한다). 겹치지 않는지는 스크린샷으로 확인 필요.
+CART_SCENE_POSITION = (1.3, 0.0, 0.0)
+CART_SCENE_ROT_Z = 90.0
+VEHICLE_SCENE_POSITION = (3.6, 0.0, 0.0)
+VEHICLE_SCENE_ROT_Z = 0.0
 
 # ---------------- 91.cart_pick_holonomic.py/100.py와 동일 - 그리퍼 ----------------
 EE_LINK_NAME = "link_6"
@@ -499,6 +530,10 @@ stage = omni.usd.get_context().get_stage()
 
 world = World(stage_units_in_meters=1.0)
 world.scene.add_default_ground_plane()
+
+cart_scene = build_cart_with_boxes(
+    stage, simulation_app, CART_USD, position=CART_SCENE_POSITION, rot_z=CART_SCENE_ROT_Z)
+build_vehicle(stage, simulation_app, CAR_USD, position=VEHICLE_SCENE_POSITION, rot_z=VEHICLE_SCENE_ROT_Z)
 
 chassis_path, hub_joint_paths, k_factor = build_holonomic_base(
     stage, CHASSIS_SPAWN_XY, BASE_LENGTH, BASE_WIDTH, BASE_HEIGHT)
