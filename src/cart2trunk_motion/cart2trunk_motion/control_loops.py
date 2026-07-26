@@ -51,6 +51,28 @@ def base_frame_to_world(anchor, point_xyz):
     return (wx, wy, wz)
 
 
+def compute_standoff(from_xy, target_xy, distance_m: float):
+    """target_xy에서 distance_m만큼 떨어진, from_xy가 있는 쪽을 향한 지점과
+    그 지점에서 target_xy를 바라보는 yaw(라디안)를 계산한다.
+
+    100.py의 CART_CLEAR_X/CART_BASE_LEFT_XY/CART_BASE_RIGHT_XY처럼 카트/차량
+    메시의 정확한 형상(손잡이 위치 등)을 아는 정교한 접근은 아니다 - "지금 있는
+    쪽에서 목표를 정면으로 보고 distance_m만큼 떨어져서 선다"는 범용 기본값이라,
+    카트를 어느 쪽에서 접근해야 손잡이/장애물과 안 부딪히는지는 구분하지 못한다.
+    실제 카트/차량 형상에 맞춘 정교한 접근이 필요해지면 그때 대체할 자리 -
+    지금은 "카트/트렁크 쪽으로 실제로 다가간다"는 것 자체를 먼저 동작시킨다."""
+    fx, fy = from_xy
+    tx, ty = target_xy
+    dx, dy = fx - tx, fy - ty
+    dist = math.hypot(dx, dy)
+    if dist < 1e-6:
+        dx, dy, dist = 1.0, 0.0, 1.0
+    ux, uy = dx / dist, dy / dist
+    standoff_xy = (tx + ux * distance_m, ty + uy * distance_m)
+    yaw = math.atan2(ty - standoff_xy[1], tx - standoff_xy[0])
+    return standoff_xy, yaw
+
+
 def down_quat_with_yaw(yaw_rad: float):
     """똑바로 아래를 보는 자세(DOWN_QUAT_XYZW)에 world Z축 기준 yaw_rad만큼 더
     돌린 자세. 픽업 시 yaw=0으로 잡고(흡착은 박스 XY 회전과 무관하게 top면

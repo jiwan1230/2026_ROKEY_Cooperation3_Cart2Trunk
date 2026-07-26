@@ -14,25 +14,43 @@ m0609_base/trunk_frame 기준이다(HANDOFF_MSI2.md 6.2절). 이 두 프레임�
 시작하는 순간의 섀시 world pose + 리프트 높이를 "앵커"로 한 번 캡처해서
 그 기준으로 base_frame -> world 변환을 한다.
 
+[모바일 베이스 주행 - APPROACH_CART/TRANSPORT]
+cart2trunk_simulation 씬(1차 슬라이스)에서 카트/차량이 로봇 스폰 위치의 팔
+반경 밖에 놓여 있다는 게 실측으로 확인돼서, 이번에 실제 주행을 추가했다.
+control_loops.compute_standoff()로 "지금 있는 쪽에서 목표를 정면으로
+distance_m만큼 떨어져서 본다"는 범용 접근 지점을 계산해 drive_to()로 이동한다.
+100.py의 CART_CLEAR_X/CART_BASE_LEFT_XY처럼 카트 손잡이 위치 등 자산별 정확한
+형상을 아는 정교한 접근은 아니다 - 그건 실제 카트/차량 형상으로 재현되며
+다듬어야 할 부분(모듈 하단 "안 하는 것" 3번 참고).
+
+⚠️ 주행 중(APPROACH_CART/TRANSPORT) 팔은 능동적으로 제어하지 않는다 - 마지막
+명령한 world 목표를 platform_controller_node가 계속 유지하려고만 한다. 섀시가
+움직이면 그 목표와의 거리가 멀어져 팔이 뻗정팔로 안 좋은 자세를 취하거나 도달
+범위를 넘어설 수 있다(100.py의 "안전 운송 자세(조인트 접기)"가 원래 이걸
+막는 역할이었는데 아직 포팅 안 함) - 다음 개선 대상으로 남겨둔다.
+
+[좌표계 - 반드시 읽을 것]
+ExecutePickPlace.Goal의 source_box.detected_pose/task.target_pose는 각각
+m0609_base/trunk_frame 기준이다(HANDOFF_MSI2.md 6.2절). 이 두 프레임은 전부
+"골 실행을 시작하는 순간 로봇이 서 있던 위치"에 고정된 상대 프레임이라(주행
+중에도 이 기준점 자체는 바뀌지 않음 - 섀시가 그 뒤에 실제로 움직여도 무방),
+팔을 world로 움직이려면 그 시작 시점 섀시 world pose + 리프트 높이를 "앵커"로
+한 번만 캡처해서 기준으로 삼는다.
+
 [중요한 단순화 - 이번 슬라이스가 안 하는 것]
-1. 모바일 베이스 주행(cmd_vel)을 전혀 안 쓴다 - mission_coordinator_node의
-   현재 루프(ScanBoxes -> {ScanTrunk -> ComputeLoadPlan -> ExecutePickPlace})는
-   그 사이에 "카트로 이동"/"트렁크로 이동" 단계가 없다 - 즉 지금 시스템은 카트와
-   트렁크가 모두 팔+리프트 범위 안에 들어오는 한 위치에 로봇이 고정 주차돼
-   있다고 전제한다. 실제로 두 지점이 팔 범위를 벗어나 있다면 별도의
-   position/scan_motion_action_server(주차 위치 자체를 잡는 단계)가 먼저
-   필요한데, 아직 이관되지 않았다 - 그 전까지 TRANSPORT 단계는 "팔로 들어서
-   옮기기"만 한다.
-2. 리프트를 능동적으로 쓰지 않는다(lift_delta_m 파라미터는 기본 0 - 훅만
+1. 리프트를 능동적으로 쓰지 않는다(lift_delta_m 파라미터는 기본 0 - 훅만
    만들어둠) - LIFT_MIN/MAX 등 실측 상수는 platform_controller_node(Isaac Sim
    프로세스) 안에만 있어서 이 프로세스에서 안전한 기본값을 추정할 근거가 없다.
    실측 후 파라미터로 채울 것.
-3. 100.py의 dual-side 카트 접근, 기울기(tilt) 진입, 충돌 회피 raycast 등은
-   포함하지 않는다 - 이번 최종 하드웨어(옴니휠+리프트+M0609)에서 그 로직이
-   그대로 필요한지도 아직 검증 전이라 새 하드웨어로 재검증하기 전까지는
-   가장 단순한 "박스 위로 접근 -> 하강 -> 흡착 -> 들기 -> 이동 -> 하강 -> 해제"
+2. 100.py의 dual-side 카트 접근(손잡이 회피), 기울기(tilt) 진입, 충돌 회피
+   raycast, 안전 운송 자세(조인트 접기) 등은 포함하지 않는다 - 이번 최종
+   하드웨어(옴니휠+리프트+M0609)에서 그 로직이 그대로 필요한지도 아직 검증
+   전이라 새 하드웨어로 재검증하기 전까지는 가장 단순한 "카트 옆으로 주행 ->
+   박스 위로 접근 -> 하강 -> 흡착 -> 들기 -> 트렁크 앞으로 주행 -> 하강 -> 해제"
    시퀀스만 구현한다.
 """
+import math
+
 import rclpy
 from rclpy.action import ActionServer
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -44,11 +62,13 @@ from cart2trunk_interfaces.action import ExecutePickPlace
 from cart2trunk_common import error_codes
 from cart2trunk_common.geometry import add_offset, z_yaw_from_quaternion
 
-from cart2trunk_motion.control_loops import base_frame_to_world, down_quat_with_yaw, move_tip_to
+from cart2trunk_motion.control_loops import (
+    base_frame_to_world, compute_standoff, down_quat_with_yaw, drive_to, move_tip_to,
+)
 from cart2trunk_motion.platform_client import PlatformClient
 
 _PHASES = [
-    'APPROACH_PICK', 'DESCEND_PICK', 'GRIP', 'LIFT', 'SAFE_RETRACT',
+    'APPROACH_CART', 'APPROACH_PICK', 'DESCEND_PICK', 'GRIP', 'LIFT', 'SAFE_RETRACT',
     'TRANSPORT', 'APPROACH_PLACE', 'DESCEND_PLACE', 'RELEASE', 'RETREAT',
 ]
 
@@ -68,7 +88,12 @@ class ExecutePickPlaceActionServer(Node):
         self.declare_parameter('approach_clearance_m', 0.15)
         self.declare_parameter('pick_tolerance_m', 0.005)
         self.declare_parameter('place_tolerance_m', 0.005)
-        self.declare_parameter('lift_delta_m', 0.0)  # 훅만 - 기본은 무동작(모듈 docstring 2번 참고)
+        self.declare_parameter('lift_delta_m', 0.0)  # 훅만 - 기본은 무동작(모듈 docstring 1번 참고)
+        self.declare_parameter('cart_standoff_m', 0.6)
+        self.declare_parameter('trunk_standoff_m', 0.7)
+        self.declare_parameter('drive_tolerance_xy_m', 0.08)
+        self.declare_parameter('drive_tolerance_yaw_deg', 8.0)
+        self.declare_parameter('drive_max_seconds', 120.0)
 
         self._platform = PlatformClient(self, cb_group)
         self._execution_count = 0
@@ -103,6 +128,25 @@ class ExecutePickPlaceActionServer(Node):
         result = move_tip_to(
             self._platform, target_world, orientation_xyzw=orientation_xyzw,
             tolerance=tolerance, max_seconds=max_seconds)
+        if not result.success:
+            raise PickPlaceAborted(error_codes.ROBOT_TIMEOUT, f'{phase} 실패: {result.detail}')
+        self.get_logger().info(f'{phase}: {result.detail}')
+
+    def _run_drive_to_standoff(
+        self, goal_handle, phase: str, progress: float, target_xy, distance_m,
+    ):
+        current_pose = self._platform.base_pose
+        if current_pose is None:
+            raise PickPlaceAborted(error_codes.PLATFORM_UNAVAILABLE, f'{phase} 실패: base_pose 없음')
+        standoff_xy, yaw = compute_standoff(current_pose[0][:2], target_xy, distance_m)
+        self._feedback(goal_handle, phase, progress)
+        tolerance_yaw_deg = float(self.get_parameter('drive_tolerance_yaw_deg').value)
+        result = drive_to(
+            self._platform, standoff_xy[0], standoff_xy[1], yaw,
+            tolerance_xy=float(self.get_parameter('drive_tolerance_xy_m').value),
+            tolerance_yaw_rad=math.radians(tolerance_yaw_deg),
+            max_seconds=float(self.get_parameter('drive_max_seconds').value),
+        )
         if not result.success:
             raise PickPlaceAborted(error_codes.ROBOT_TIMEOUT, f'{phase} 실패: {result.detail}')
         self.get_logger().info(f'{phase}: {result.detail}')
@@ -159,9 +203,14 @@ class ExecutePickPlaceActionServer(Node):
             ))
             place_quat = down_quat_with_yaw(target_yaw - source_box.yaw)
 
+            # --- APPROACH_CART: 박스를 팔로 집을 수 있는 거리까지 실제로 주행 ---
+            cart_standoff_m = float(self.get_parameter('cart_standoff_m').value)
+            self._run_drive_to_standoff(
+                goal_handle, 'APPROACH_CART', 0.03, pick_center_world[:2], cart_standoff_m)
+
             # --- PICK ---
             self._run_move(
-                goal_handle, 'APPROACH_PICK', 0.05, pick_hover, pick_quat, clearance * 0.5)
+                goal_handle, 'APPROACH_PICK', 0.10, pick_hover, pick_quat, clearance * 0.5)
             self._run_move(goal_handle, 'DESCEND_PICK', 0.20, pick_top, pick_quat, pick_tol)
 
             self._feedback(goal_handle, 'GRIP', 0.30)
@@ -184,9 +233,10 @@ class ExecutePickPlaceActionServer(Node):
             move_tip_to(self._platform, pick_hover, orientation_xyzw=place_quat,
                         tolerance=pick_tol, max_seconds=5.0)
 
-            # --- TRANSPORT (팔 범위 안에서만 - 모듈 docstring 1번) ---
-            self._run_move(
-                goal_handle, 'TRANSPORT', 0.65, place_hover, place_quat, clearance * 0.5)
+            # --- TRANSPORT: 박스를 든 채로 트렁크 근처까지 실제로 주행 ---
+            trunk_standoff_m = float(self.get_parameter('trunk_standoff_m').value)
+            self._run_drive_to_standoff(
+                goal_handle, 'TRANSPORT', 0.65, place_center_world[:2], trunk_standoff_m)
 
             self._run_move(goal_handle, 'APPROACH_PLACE', 0.75, place_hover, place_quat, place_tol)
             self._run_move(goal_handle, 'DESCEND_PLACE', 0.85, place_top, place_quat, place_tol)

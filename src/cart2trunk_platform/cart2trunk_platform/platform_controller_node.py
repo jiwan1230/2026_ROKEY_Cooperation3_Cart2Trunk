@@ -133,8 +133,14 @@ from isaacsim.robot.manipulators.grippers.surface_gripper import SurfaceGripper
 # 타입(ROS2CameraHelper 등)은 익스텐션이 활성화돼야 omni.graph 레지스트리에
 # 등록된다. rclpy import용 sys.path/LD_LIBRARY_PATH 설정(위)과는 별개의
 # 활성화 단계 - 둘 다 있어야 카메라 ROS2 브리지가 동작한다.
-enable_extension("isaacsim.ros2.bridge")
-
+#
+# ⚠️ 실측 확인(2026-07-27) - 이 enable_extension() 호출 자체가(카메라 그래프를
+# 실제로 만들기도 전에) 이 PC의 GPU/드라이버 조합(아래 CART2TRUNK_ENABLE_CAMERA_BRIDGE
+# 정의부 참고)에서 omni.graph.image 세그폴트를 유발한다는 게 확인됐다 - 그래서
+# 카메라 브리지를 켤 때만(같은 환경변수로) 호출하도록 뒤로 미뤘다. rclpy 통신
+# (토픽/서비스)은 이 익스텐션 활성화 없이도 이미 별도로 동작해왔으므로(sys.path
+# 기반 import), 카메라를 안 쓰는 실행에는 전혀 영향 없다.
+#
 # HANDOFF_MSI2.md 2.3절 - M0609 자산(RMPflow/URDF/그리퍼 USD)은 git에 없고 PC마다
 # 로컬 경로가 다르다 - 하드코딩 대신 CART2TRUNK_M0609_DIR 환경변수로 받는다.
 # 기본값은 이 PC에서 실제로 검증된 사본(git으로 관리되는 살아있는 작업본 -
@@ -565,17 +571,28 @@ m0609_path, m0609_base_link_path, lift_translate_op, lift_scale_op = mount_m0609
 for _ in range(10):
     simulation_app.update()
 
-_depth_camera_prim_path, _all_camera_candidates = find_camera_prim_path(
-    stage, m0609_path, DEPTH_CAMERA_NAME_HINT)
-if _depth_camera_prim_path is None:
-    raise RuntimeError(f"카메라 프림을 못 찾음 - 발견된 카메라 후보: {_all_camera_candidates}")
-print(f"[CAMERA] depth 카메라: {_depth_camera_prim_path} "
-      f"(후보 전체: {_all_camera_candidates})", flush=True)
-depth_camera = initialize_depth_camera(_depth_camera_prim_path, CAMERA_WIDTH, CAMERA_HEIGHT)
-setup_ros2_camera_bridge(
-    _depth_camera_prim_path, depth_topic=DEPTH_TOPIC, camera_info_topic=CAMERA_INFO_TOPIC,
-    frame_id=CAMERA_FRAME_ID, width=CAMERA_WIDTH, height=CAMERA_HEIGHT)
-print(f"[ROS2] {DEPTH_TOPIC}, {CAMERA_INFO_TOPIC} 발행 시작 (frame_id={CAMERA_FRAME_ID})", flush=True)
+# ⚠️ 실측 확인된 환경 문제(2026-07-27) - 이 PC의 GPU(Blackwell 계열, RTX 5080
+# Laptop)+드라이버(580.159.03, 검증된 570.169/580.95.05보다 최신) 조합에서
+# IsaacCreateRenderProduct가 6번 중 5번꼴로 omni.graph.image 안에서 세그폴트를
+# 낸다(NVIDIA 개발자 포럼에 같은 시그니처의 알려진 이슈로 보고돼 있음 - 코드
+# 버그 아님). 드라이버 문제 해결 전까지는 카메라 브리지가 다른 작업(모션 등)
+# 테스트를 막지 않도록 기본 비활성화하고 환경변수로만 켠다.
+if os.environ.get("CART2TRUNK_ENABLE_CAMERA_BRIDGE", "0") == "1":
+    enable_extension("isaacsim.ros2.bridge")
+    _depth_camera_prim_path, _all_camera_candidates = find_camera_prim_path(
+        stage, m0609_path, DEPTH_CAMERA_NAME_HINT)
+    if _depth_camera_prim_path is None:
+        raise RuntimeError(f"카메라 프림을 못 찾음 - 발견된 카메라 후보: {_all_camera_candidates}")
+    print(f"[CAMERA] depth 카메라: {_depth_camera_prim_path} "
+          f"(후보 전체: {_all_camera_candidates})", flush=True)
+    depth_camera = initialize_depth_camera(_depth_camera_prim_path, CAMERA_WIDTH, CAMERA_HEIGHT)
+    setup_ros2_camera_bridge(
+        _depth_camera_prim_path, depth_topic=DEPTH_TOPIC, camera_info_topic=CAMERA_INFO_TOPIC,
+        frame_id=CAMERA_FRAME_ID, width=CAMERA_WIDTH, height=CAMERA_HEIGHT)
+    print(f"[ROS2] {DEPTH_TOPIC}, {CAMERA_INFO_TOPIC} 발행 시작 (frame_id={CAMERA_FRAME_ID})", flush=True)
+else:
+    print("[CAMERA] CART2TRUNK_ENABLE_CAMERA_BRIDGE=1이 아니라서 카메라 브리지 비활성화 "
+          "(알려진 드라이버 크래시 이슈 - 모듈 docstring 참고)", flush=True)
 
 m0609_robot = SingleArticulation(prim_path=m0609_base_link_path, name="m0609_arm")
 base_robot = SingleArticulation(prim_path=chassis_path, name="holo_base")
