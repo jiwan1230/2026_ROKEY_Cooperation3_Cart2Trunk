@@ -3,9 +3,12 @@ import { Canvas } from "@react-three/fiber";
 import { Grid, OrbitControls } from "@react-three/drei";
 import { usePlannerState } from "../state/PlannerContext.jsx";
 import { colorForBoxId } from "../utils/color.js";
+import { postScenarioPlan } from "../api/client.js";
 import {
   toThreeCenter, TrunkWireframe, computeCartFootprint, CartWireframe, SceneBoxMesh, layoutStagingBoxes,
+  BoundingBoxWireframe,
 } from "./sceneMeshes.jsx";
+import { SCENARIOS, scenarioTrunkColor, scenarioBoxColor } from "./scenarioTheme.js";
 import styles from "./Scene3DViewer.module.css";
 
 const STEP_DELAY_MS = 700; // "순서대로 재생"에서 박스 하나가 나타나고 다음 박스까지 기다리는 시간
@@ -48,6 +51,34 @@ const CAMERA_PRESETS = {
 
 export default function Scene3DViewer() {
   const state = usePlannerState();
+  // 산업현장 시나리오 미리보기 - state.result(지금 작업 중인 계획)는 전혀
+  // 건드리지 않는 완전히 별도의 로컬 상태다. 활성화되면 아래 렌더링에서
+  // 기존 trunk/placed 기반 씬 대신 이걸 보여준다.
+  const [activeScenarioId, setActiveScenarioId] = useState(null);
+  const [scenarioResult, setScenarioResult] = useState(null);
+  const [scenarioError, setScenarioError] = useState(null);
+  const [scenarioLoading, setScenarioLoading] = useState(false);
+
+  const handleSelectScenario = async (id) => {
+    setScenarioLoading(true);
+    setScenarioError(null);
+    try {
+      const result = await postScenarioPlan(id);
+      setActiveScenarioId(id);
+      setScenarioResult(result);
+    } catch (err) {
+      setScenarioError(err.cause || err.message || "시나리오를 불러오지 못했습니다.");
+    } finally {
+      setScenarioLoading(false);
+    }
+  };
+
+  const handleExitScenario = () => {
+    setActiveScenarioId(null);
+    setScenarioResult(null);
+    setScenarioError(null);
+  };
+
   const controlsRef = useRef(null);
   const [preset, setPreset] = useState("front");
   // tkinter GUI의 Before/After 정적 이미지 대신, 같은 3D 씬을 그대로 두고
@@ -170,20 +201,22 @@ export default function Scene3DViewer() {
   return (
     <div className={styles.wrapper}>
       <div className={styles.toolbar}>
-        <div className={styles.stageBar}>
-          {[["before", "Before"], ["after", "After"]].map(([value, text]) => (
-            <button
-              key={value}
-              type="button"
-              className={stage === value ? styles.stageActive : styles.stage}
-              onClick={() => setStage(value)}
-            >
-              {text}
-            </button>
-          ))}
-        </div>
+        {!activeScenarioId && (
+          <div className={styles.stageBar}>
+            {[["before", "Before"], ["after", "After"]].map(([value, text]) => (
+              <button
+                key={value}
+                type="button"
+                className={stage === value ? styles.stageActive : styles.stage}
+                onClick={() => setStage(value)}
+              >
+                {text}
+              </button>
+            ))}
+          </div>
+        )}
         <div className={styles.presetBar}>
-          {showPlaced && placed.length > 0 && (
+          {!activeScenarioId && showPlaced && placed.length > 0 && (
             <button type="button" disabled={animating} onClick={handlePlayStepByStep}>
               {animating ? `▶ 재생 중 (${visibleCount}/${placed.length})` : "▶ 순서대로 재생"}
             </button>
@@ -191,8 +224,25 @@ export default function Scene3DViewer() {
           {Object.keys(CAMERA_PRESETS).map((name) => (
             <button key={name} type="button" onClick={() => setPreset(name)}>{name}</button>
           ))}
+          <div className={styles.scenarioBar}>
+            {SCENARIOS.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                disabled={scenarioLoading}
+                className={activeScenarioId === s.id ? styles.scenarioActive : undefined}
+                onClick={() => handleSelectScenario(s.id)}
+              >
+                {s.label}
+              </button>
+            ))}
+            {activeScenarioId && (
+              <button type="button" onClick={handleExitScenario}>실시간 계획으로 돌아가기</button>
+            )}
+          </div>
         </div>
       </div>
+      {scenarioError && <span className={styles.scenarioError}>{scenarioError}</span>}
       <Canvas key={dpr} dpr={dpr} camera={{ position: CAMERA_PRESETS.front.position, fov: 50 }}>
         <ambientLight intensity={0.7} />
         <directionalLight position={[3, 5, 3]} intensity={0.6} />
@@ -207,22 +257,36 @@ export default function Scene3DViewer() {
           sectionSize={1} sectionThickness={1} sectionColor="#B8B8C4"
           fadeDistance={9} fadeStrength={1.2} infiniteGrid
         />
-        {trunk && <TrunkWireframe trunk={trunk} />}
-        {cartFootprint && (
-          <CartWireframe footprint={cartFootprint} entranceNearX={trunk.entrance_near_x !== false} />
+        {activeScenarioId && scenarioResult ? (
+          <>
+            <BoundingBoxWireframe x={0} y={0} z={0}
+              width={scenarioResult.trunk.width} depth={scenarioResult.trunk.depth}
+              height={scenarioResult.trunk.height} color={scenarioTrunkColor(activeScenarioId)} />
+            {scenarioResult.placed.map((p) => (
+              <SceneBoxMesh key={p.box_id} position={p.position} dimensions={p.dimensions}
+                            color={scenarioBoxColor(activeScenarioId, p.box_id)} />
+            ))}
+          </>
+        ) : (
+          <>
+            {trunk && <TrunkWireframe trunk={trunk} />}
+            {cartFootprint && (
+              <CartWireframe footprint={cartFootprint} entranceNearX={trunk.entrance_near_x !== false} />
+            )}
+            {state.result?.obstacles?.map((o) => (
+              <SceneBoxMesh key={o.id} position={[o.x, o.y, o.z]}
+                            dimensions={[o.width, o.depth, o.height]} color="#7f8c8d" />
+            ))}
+            {showPlaced && visiblePlaced.map((p) => (
+              <SceneBoxMesh key={p.box_id} position={p.position} dimensions={p.dimensions}
+                            color={colorForBoxId(p.box_id)} dashed={p.position[2] > 1e-6} />
+            ))}
+            {stagedBoxes.map((b) => (
+              <SceneBoxMesh key={b.id} position={b.position} dimensions={b.dimensions}
+                            color={colorForBoxId(b.id)} />
+            ))}
+          </>
         )}
-        {state.result?.obstacles?.map((o) => (
-          <SceneBoxMesh key={o.id} position={[o.x, o.y, o.z]}
-                        dimensions={[o.width, o.depth, o.height]} color="#7f8c8d" />
-        ))}
-        {showPlaced && visiblePlaced.map((p) => (
-          <SceneBoxMesh key={p.box_id} position={p.position} dimensions={p.dimensions}
-                        color={colorForBoxId(p.box_id)} dashed={p.position[2] > 1e-6} />
-        ))}
-        {stagedBoxes.map((b) => (
-          <SceneBoxMesh key={b.id} position={b.position} dimensions={b.dimensions}
-                        color={colorForBoxId(b.id)} />
-        ))}
       </Canvas>
     </div>
   );
