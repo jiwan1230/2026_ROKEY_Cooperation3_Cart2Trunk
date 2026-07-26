@@ -28,20 +28,25 @@ def test_delivery_truck_places_later_stops_farther_from_entrance():
     assert by_id["정류장4_박스"]["position"][0] > by_id["정류장1_박스"]["position"][0]
 
 
-def test_warehouse_places_6_of_8_boxes():
-    # 실측: 6개(소형6+대형2 중 소형만 다 들어가고 대형 일부는 못 들어감)
-    # 데모 트렁크(0.6x0.4x0.45)가 좁아서 8개 전부는 안 들어간다.
+def test_warehouse_places_7_of_8_boxes_with_tight_margin():
+    # 공간활용 우선순위 - 마진을 1cm로 타이트하게 줘서(기본 2cm보다 좁음)
+    # count_first 모드만 쓸 때(6/8, margin 기본값)보다 더 많이 들어간다(실측 7/8).
     resp = _client().post("/api/scenarios/warehouse/plan")
     assert resp.status_code == 200
     body = resp.get_json()
-    assert body["summary"] == {"total": 8, "placed": 6, "unplaced": 2}
+    assert body["summary"] == {"total": 8, "placed": 7, "unplaced": 1}
 
 
-def test_cold_chain_places_all_3_boxes():
+def test_cold_chain_places_all_3_boxes_with_wide_margin():
     resp = _client().post("/api/scenarios/cold_chain/plan")
     assert resp.status_code == 200
     body = resp.get_json()
     assert body["summary"] == {"total": 3, "placed": 3, "unplaced": 0}
+    # 냉기 순환 우선순위 - x축으로 나란히 놓인 박스끼리 기본 마진(2cm)보다
+    # 넓은(5cm) 간격이 있어야 한다.
+    by_x = sorted(body["placed"], key=lambda p: p["position"][0])
+    gap = by_x[1]["position"][0] - (by_x[0]["position"][0] + by_x[0]["dimensions"][0])
+    assert gap >= 0.05 - 1e-9
 
 
 def test_hazmat_places_oxidizer_and_flammable_apart():
