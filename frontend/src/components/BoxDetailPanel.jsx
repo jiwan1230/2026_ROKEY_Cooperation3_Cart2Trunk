@@ -1,5 +1,5 @@
 import { usePlannerDispatch, usePlannerState } from "../state/PlannerContext.jsx";
-import { gradeWeightedScore } from "../utils/scoreGrading.js";
+import { gradeBoxScore } from "../utils/scoreGrading.js";
 import styles from "./BoxDetailPanel.module.css";
 
 export default function BoxDetailPanel() {
@@ -7,6 +7,12 @@ export default function BoxDetailPanel() {
   const dispatch = usePlannerDispatch();
   const placed = state.result?.placed || [];
   const selected = placed.find((p) => p.box_id === state.selectedBoxId);
+  const grade = selected
+    ? gradeBoxScore(selected.score_breakdown.formula, selected.score, {
+        preferences: state.params,
+        trunk: state.result?.trunk,
+      })
+    : null;
 
   return (
     <div className={styles.panel}>
@@ -28,24 +34,27 @@ export default function BoxDetailPanel() {
             Target=({selected.position.map((v) => v.toFixed(2)).join(", ")})m ·
             Yaw={selected.target_yaw.toFixed(2)}rad
           </p>
-          <p>접촉면 {selected.touches}/6개, {selected.rotated ? "90도 회전됨" : "정자세"}, 점수 {selected.score.toFixed(3)}(낮을수록 좋은 자리)</p>
-          {/* "몇 점이면 좋은 건지 기준이 없다"는 피드백 - 지금 우선순위 슬라이더
-              설정에서 이 공식이 낼 수 있는 최선~최악 범위 대비 이 박스의 점수가
-              어디쯤인지 등급으로 보여준다. count_first_density 공식은 이론상
-              상한이 트렁크 크기에 따라 달라져(밀도 공식) 등급 기준 대상이 아니다.
-              SummaryCard의 "값 → 그 값의 등급 설명" 순서와 맞추기 위해
-              점수(값) 바로 아래에 둔다(사용자 피드백으로 위치 조정). */}
-          {selected.score_breakdown.formula === "weighted" ? (
-            <p className={styles.gradeLine}>
-              품질 등급:{" "}
-              <span className={styles.grade} data-grade={gradeWeightedScore(selected.score, state.params).label}>
-                {gradeWeightedScore(selected.score, state.params).label}
-              </span>{" "}
-              (지금 우선순위 설정 기준 이론상 최선~최악 범위 중 상위 {gradeWeightedScore(selected.score, state.params).pct.toFixed(0)}%)
-            </p>
-          ) : (
-            <p className={styles.gradeLine}>
-              품질 등급: 개수 우선 모드에서는 값의 이론적 상한이 케이스마다 달라 등급을 매기지 않습니다 - 같은 계산 안에서 다른 박스와 상대 비교로 판단하세요.
+          <p>접촉면 {selected.touches}/6개, {selected.rotated ? "90도 회전됨" : "정자세"}</p>
+          {/* "몇 점이면 좋은 건지 기준이 없다"는 피드백 - SummaryCard의 "평균
+              점수"와 완전히 같은 모양(값 옆에 배지, 그 밑에 작은 설명 캡션)으로
+              맞춘다(사용자 피드백 - 문장으로 따로 떨어져 있던 걸 값에 바로
+              붙는 배지로 바꿈). formula별 등급 범위는 gradeBoxScore가 알아서
+              골라준다(weighted는 preference 슬라이더 기준, count_first_density는
+              trunk 크기 기준 - "개수 우선 모드에서도 등급을 보고 싶다"는
+              피드백으로 두 공식 모두 지원하게 됨). */}
+          <p>
+            점수 {selected.score.toFixed(3)}(낮을수록 좋은 자리)
+            {grade && (
+              <span className={styles.grade} data-grade={grade.label}>
+                {grade.label}
+              </span>
+            )}
+          </p>
+          {grade && (
+            <p className={styles.gradeCaption}>
+              점수 등급: {selected.score_breakdown.formula === "weighted"
+                ? "지금 우선순위 설정"
+                : "지금 트렁크 크기"} 기준 이론상 최선~최악 범위 중 상위 {grade.pct.toFixed(0)}%
             </p>
           )}
           {/* score_breakdown.formula: "count_first" 모드는 내부적으로 서로 다른 두 채점

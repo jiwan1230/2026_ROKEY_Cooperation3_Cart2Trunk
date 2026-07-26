@@ -81,4 +81,37 @@ describe("useDebouncedPlan", () => {
     expect(client.postPlan).toHaveBeenCalledTimes(2);
     expect(screen.getByTestId("result-log").textContent).toBe("new"); // 오래된 응답에 덮어써지지 않음
   });
+
+  it("sends the real box_snapshot_id when boxes were loaded from vision data", async () => {
+    vi.spyOn(client, "postPlan").mockResolvedValue({ placed: [], log_lines: [] });
+
+    function VisionHarness() {
+      useDebouncedPlan();
+      const dispatch = usePlannerDispatch();
+      return (
+        <div>
+          <button onClick={() => dispatch({
+            type: "RESOURCES_LOADED",
+            payload: { trunkMaps: ["run_a"], boxPresets: {} },
+          })}>load</button>
+          <button onClick={() => dispatch({
+            type: "LOAD_VISION_BOXES",
+            payload: {
+              boxes: [{ id: "BOX_01", width: 0.3, depth: 0.2, height: 0.15 }],
+              snapshotId: "box_scan_001", sourceLabel: "vision:box_scan_001",
+            },
+          })}>load-vision</button>
+        </div>
+      );
+    }
+
+    render(<PlannerProvider><VisionHarness /></PlannerProvider>);
+
+    await act(async () => { screen.getByText("load").click(); });
+    await act(async () => { screen.getByText("load-vision").click(); });
+    await act(async () => { vi.advanceTimersByTime(400); });
+
+    const lastCall = client.postPlan.mock.calls.at(-1)[0];
+    expect(lastCall.box_snapshot_id).toBe("box_scan_001");
+  });
 });

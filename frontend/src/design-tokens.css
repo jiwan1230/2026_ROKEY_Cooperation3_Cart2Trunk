@@ -1,4 +1,9 @@
 /* src/design-tokens.css - planner_gui.py의 Palette/Font를 그대로 옮김 */
+/* [되돌림 기록] "최첨단 느낌"으로 다크 테마 + 네온 액센트를 전체에
+   입혀봤는데, 사용자가 "이상하다"며 3D 뷰어만 남기고 나머지는 원래 밝은
+   테마로 되돌려달라고 함 - 여기(전역 토큰)는 원래 값으로 복원하고, 다크
+   느낌은 Scene3DViewer.module.css 안에 그 컴포넌트만의 색으로 따로
+   남겨뒀다(전역 토큰에 얹혀있으면 여기서 되돌릴 때 같이 밝아져 버림). */
 :root {
   --color-canvas: #F5F5F7;
   --color-surface: #FFFFFF;

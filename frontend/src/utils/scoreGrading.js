@@ -9,6 +9,8 @@ const HEIGHT_WEIGHT = 1.0;
 const CONTACT_WEIGHT = 0.5;
 const WALL_A_WEIGHT = 0.9;
 const WALL_BC_WEIGHT = 0.2;
+const COUNT_FIRST_HEIGHT_WEIGHT = 1.0;
+const COUNT_FIRST_FOOTPRINT_GROWTH_WEIGHT = 5.0;
 
 function labelForPct(pct) {
   if (pct >= 80) return "우수";
@@ -58,12 +60,51 @@ export function weightedScoreRange({ entrancePreference, contactPreference, heig
 }
 
 // score(낮을수록 좋음)가 [best, worst] 범위 중 어디쯤인지 0~100%로 환산하고
-// 등급을 매긴다. "count_first_density" 공식(개수 우선 모드)은 이론적
-// 상한(footprint_growth_term)이 트렁크 크기에 따라 달라져 이 함수의 대상이
-// 아니다 - weighted 공식에만 적용한다.
+// 등급을 매긴다.
 export function gradeWeightedScore(score, preferences) {
   const { best, worst } = weightedScoreRange(preferences);
   if (worst <= best) return { label: "우수", pct: 100, best, worst };
   const pct = Math.max(0, Math.min(100, ((worst - score) / (worst - best)) * 100));
   return { label: labelForPct(pct), pct, best, worst };
+}
+
+// "count_first_density" 공식(개수 우선 모드)의 최선/최악 범위. 이 공식은
+// preference 슬라이더와 무관하게 height_term + footprint_growth_term로만
+// 정해진다(algorism/05_candidate_scoring.py의 score_count_first 참고).
+// height_term = COUNT_FIRST_HEIGHT_WEIGHT * (z/trunk.height) 는 z가
+// [0, trunk.height] 범위라 [0, WEIGHT] 사이. footprint_growth_term은
+// growth_x = max(0, (x+box.width)-used_max_x) 형태인데, 박스는 항상 트렁크
+// 안에 들어가야 하므로(x+box.width <= trunk.width, used_max_x >= 0)
+// growth_x는 최대 trunk.width, 마찬가지로 growth_y는 최대 trunk.depth로
+// 상한이 걸린다 - 처음 박스를 놓을 때(이미 차지한 영역이 없을 때, used_max=0)
+// 이 상한에 가장 가까워진다. 최소는 두 항 모두 0(이미 차지한 영역과 완전히
+// 겹치는 자리, 높이도 바닥)이다. 즉 이 범위는 preference가 아니라 트렁크
+// 크기(trunk.width/depth/height)에 따라 달라진다.
+export function countFirstDensityScoreRange(trunk) {
+  const best = 0;
+  const worst = COUNT_FIRST_HEIGHT_WEIGHT
+    + COUNT_FIRST_FOOTPRINT_GROWTH_WEIGHT * (trunk.width + trunk.depth);
+  return { best, worst };
+}
+
+export function gradeCountFirstDensityScore(score, trunk) {
+  const { best, worst } = countFirstDensityScoreRange(trunk);
+  if (worst <= best) return { label: "우수", pct: 100, best, worst };
+  const pct = Math.max(0, Math.min(100, ((worst - score) / (worst - best)) * 100));
+  return { label: labelForPct(pct), pct, best, worst };
+}
+
+// 박스 하나의 score_breakdown.formula가 뭐든 상관없이 등급을 매겨주는
+// 통합 진입점. formula별로 이론적 범위를 구하는 방법이 서로 달라서
+// (weighted는 preference 슬라이더 기준, count_first_density는 트렁크
+// 크기 기준) 내부에서 분기한다. trunk 정보가 없으면(옛 API 응답 등)
+// count_first_density는 등급을 매길 수 없어 null을 반환한다.
+export function gradeBoxScore(formula, score, { preferences, trunk } = {}) {
+  if (formula === "count_first_density") {
+    return trunk ? gradeCountFirstDensityScore(score, trunk) : null;
+  }
+  if (formula === "weighted") {
+    return preferences ? gradeWeightedScore(score, preferences) : null;
+  }
+  return null;
 }

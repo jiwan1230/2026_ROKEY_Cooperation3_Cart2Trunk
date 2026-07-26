@@ -24,6 +24,7 @@ const COUNT_FIRST_RESULT = {
       score_breakdown: { formula: "count_first_density", height_term: 0.5, footprint_growth_term: 1.0 } },
   ],
   log_lines: [],
+  trunk: { width: 0.85, depth: 1.25, height: 0.5 },
 };
 
 function Loader({ payload }) {
@@ -46,7 +47,7 @@ describe("BoxDetailPanel", () => {
     expect(screen.getByText("개선 필요")).toBeInTheDocument();
   });
 
-  it("shows count-first-density formula score breakdown when that formula was used", async () => {
+  it("shows count-first-density formula score breakdown and a trunk-size-based grade", async () => {
     render(
       <PlannerProvider>
         <Loader payload={COUNT_FIRST_RESULT} />
@@ -56,6 +57,8 @@ describe("BoxDetailPanel", () => {
     await userEvent.click(screen.getByText("load"));
     expect(screen.getByText("새 영역 확장 항(불리)")).toBeInTheDocument();
     expect(screen.getByText("1.000")).toBeInTheDocument();
-    expect(screen.getByText(/개수 우선 모드에서는/)).toBeInTheDocument();
+    // score=1.5, trunk(0.85x1.25) 기준 범위[0, 11.5]에서 상위 87% -> 우수
+    expect(screen.getByText("우수")).toBeInTheDocument();
+    expect(screen.getByText(/점수 등급: 지금 트렁크 크기 기준/)).toBeInTheDocument();
   });
 });

@@ -50,3 +50,24 @@ export async function postSend(requestBody) {
   });
   return handleResponse(resp);
 }
+
+// 비전(준형)이 만드는 box_scan.json(HMI 설계 가이드라인 4.2절 스키마)을
+// 계획 계산에 바로 쓸 수 있는 단순 박스 목록으로 변환한다.
+export async function postParseBoxScan(boxScanJson) {
+  const resp = await fetch(`${BASE}/parse-box-scan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(boxScanJson),
+  });
+  return handleResponse(resp);
+}
+
+// 준형이 실제로 넘겨주는 all_boxes_corners_*.json 스키마용.
+export async function postParseVisionCorners(visionCornersJson) {
+  const resp = await fetch(`${BASE}/parse-vision-corners`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(visionCornersJson),
+  });
+  return handleResponse(resp);
+}

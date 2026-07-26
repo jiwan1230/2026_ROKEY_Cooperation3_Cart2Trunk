@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { usePlannerDispatch, usePlannerState } from "../state/PlannerContext.jsx";
 import { postApprove, postSend } from "../api/client.js";
+import VisionDataLoader from "./VisionDataLoader.jsx";
 import styles from "./ControlPanel.module.css";
 
 function generateRandomBoxes(count) {
@@ -180,6 +181,13 @@ export default function ControlPanel() {
 
       <section className={styles.section}>
         <label className={styles.label}>박스 목록 (JSON)</label>
+        <VisionDataLoader disabled={locked} />
+        {state.boxSnapshotId && (
+          <div className={styles.fieldRow}>
+            <span className={styles.fieldLabel}>비전 스냅샷 ID</span>
+            <span className={styles.fieldLabel}>{state.boxSnapshotId}</span>
+          </div>
+        )}
         <div className={styles.generateRow}>
           <input
             type="number"

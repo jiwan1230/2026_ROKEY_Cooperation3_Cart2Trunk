@@ -1,4 +1,17 @@
 /* src/components/LogPanel.module.css */
-.panel { background: var(--color-surface); border-top: 1px solid var(--color-border); padding: 12px 20px; max-height: 160px; overflow-y: auto; }
+/* 예전엔 페이지 맨 아래에 붙는 별도 줄(border-top + 고정 max-height)이었는데,
+   요약 카드 밑 빈 공간에 넣어달라는 피드백으로 옆의 다른 카드들과 같은
+   모양(둥근 모서리 흰 카드)으로 바꿨다. 처음엔 flex:1로 남는 공간을
+   전부 채웠는데, "쭉 내려서 칸 맨 밑에 배치해달라"는 후속 피드백으로
+   App.module.css의 margin-top:auto가 빈 공간을 위로 밀어내면서 이 패널을
+   칸 맨 밑에 붙인다 - 그래서 여기서는 더 이상 무한정 늘어나지 않고,
+   내용이 길어지면 이 높이 안에서만 스크롤되도록 상한을 둔다. */
+.panel {
+  background: var(--color-surface); border-radius: 12px; padding: 16px;
+  display: flex; flex-direction: column; max-height: 260px;
+}
 .label { font-size: 11px; font-weight: 700; color: var(--color-text-secondary); text-transform: uppercase; }
-.log { font-family: var(--font-mono); font-size: 11px; white-space: pre-wrap; margin: 6px 0 0; }
+.log {
+  font-family: var(--font-mono); font-size: 11px; white-space: pre-wrap;
+  margin: 6px 0 0; overflow-y: auto;
+}

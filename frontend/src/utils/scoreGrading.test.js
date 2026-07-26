@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { gradeUtilization, gradeWeightedScore, weightedScoreRange } from "./scoreGrading.js";
+import {
+  countFirstDensityScoreRange, gradeBoxScore, gradeCountFirstDensityScore,
+  gradeUtilization, gradeWeightedScore, weightedScoreRange,
+} from "./scoreGrading.js";
 
 describe("gradeUtilization", () => {
   // 임계값(22/14/8)은 실제 트렁크 스캔 3종 + 박스 프리셋 4종 + 무작위 생성
@@ -65,5 +68,57 @@ describe("gradeWeightedScore", () => {
     const result = gradeWeightedScore(-0.46, defaultPrefs);
     expect(result.pct).toBeCloseTo(56.15, 1);
     expect(result.label).toBe("양호");
+  });
+});
+
+describe("countFirstDensityScoreRange", () => {
+  it("matches the known range for a real trunk size (0.85m x 1.25m x 0.5m)", () => {
+    // algorism/05_candidate_scoring.py 가중치로 손으로 계산한 값:
+    // best = 0, worst = 1.0 + 5.0*(0.85+1.25) = 11.5
+    const { best, worst } = countFirstDensityScoreRange({ width: 0.85, depth: 1.25, height: 0.5 });
+    expect(best).toBe(0);
+    expect(worst).toBeCloseTo(11.5);
+  });
+
+  it("scales the range with trunk footprint size", () => {
+    const small = countFirstDensityScoreRange({ width: 0.5, depth: 0.5, height: 0.5 });
+    const large = countFirstDensityScoreRange({ width: 1.0, depth: 1.5, height: 0.5 });
+    expect(large.worst).toBeGreaterThan(small.worst);
+  });
+});
+
+describe("gradeCountFirstDensityScore", () => {
+  const trunk = { width: 0.85, depth: 1.25, height: 0.5 };
+
+  it("grades the best possible score (0) as excellent", () => {
+    expect(gradeCountFirstDensityScore(0, trunk).label).toBe("우수");
+  });
+
+  it("grades the worst possible score as needs improvement", () => {
+    expect(gradeCountFirstDensityScore(11.5, trunk).label).toBe("개선 필요");
+  });
+
+  it("grades a real example score (1.5) as excellent", () => {
+    // (11.5-1.5)/11.5 = 86.9% -> 우수
+    const result = gradeCountFirstDensityScore(1.5, trunk);
+    expect(result.pct).toBeCloseTo(86.96, 1);
+    expect(result.label).toBe("우수");
+  });
+});
+
+describe("gradeBoxScore", () => {
+  const trunk = { width: 0.85, depth: 1.25, height: 0.5 };
+  const prefs = { entrancePreference: 1.0, contactPreference: 1.0, heightPreference: 1.0 };
+
+  it("routes weighted formula scores to gradeWeightedScore", () => {
+    expect(gradeBoxScore("weighted", -1.6, { preferences: prefs, trunk }).label).toBe("우수");
+  });
+
+  it("routes count_first_density formula scores to gradeCountFirstDensityScore", () => {
+    expect(gradeBoxScore("count_first_density", 1.5, { preferences: prefs, trunk }).label).toBe("우수");
+  });
+
+  it("returns null when count_first_density is graded without trunk info", () => {
+    expect(gradeBoxScore("count_first_density", 1.5, { preferences: prefs })).toBeNull();
   });
 });

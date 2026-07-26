@@ -14,9 +14,10 @@
 .breakdownRow span:first-child { min-width: 130px; }
 .placeholder { font-size: 12px; color: var(--color-text-secondary); }
 
-.gradeLine { font-size: 12px; color: var(--color-text-secondary); }
+.gradeCaption { font-size: 11px; color: var(--color-text-secondary); }
 .grade {
-  font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+  margin-left: 8px; font-size: 11px; font-weight: 700; padding: 2px 8px;
+  border-radius: 999px; vertical-align: middle;
 }
 .grade[data-grade="우수"] { background: #E4F8EA; color: var(--color-success); }
 .grade[data-grade="양호"] { background: #E6F1FF; color: var(--color-accent); }

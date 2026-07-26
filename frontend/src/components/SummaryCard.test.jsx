@@ -45,11 +45,27 @@ describe("SummaryCard", () => {
     expect(screen.getByText(/점수 등급: 지금 우선순위 설정 기준/)).toBeInTheDocument();
   });
 
-  it("hides the score grade when count_first_density formula is mixed in", async () => {
+  it("shows a score grade for count_first_density when all placed boxes use it and trunk size is known", async () => {
     const payload = {
       log_lines: [],
       placed: [{ box_id: "A", score_breakdown: { formula: "count_first_density" } }],
       summary: { total: 1, placed: 1, unplaced: 0, utilization_pct: 10, avg_score: 1.2, calc_time_ms: 3 },
+      trunk: { width: 0.85, depth: 1.25, height: 0.5 },
+    };
+    render(<PlannerProvider><Loader payload={payload} /><SummaryCard /></PlannerProvider>);
+    await userEvent.click(screen.getByText("load"));
+    expect(screen.getByText(/점수 등급: 지금 트렁크 크기 기준/)).toBeInTheDocument();
+  });
+
+  it("hides the score grade when weighted and count_first_density formulas are mixed", async () => {
+    const payload = {
+      log_lines: [],
+      placed: [
+        { box_id: "A", score_breakdown: { formula: "weighted" } },
+        { box_id: "B", score_breakdown: { formula: "count_first_density" } },
+      ],
+      summary: { total: 2, placed: 2, unplaced: 0, utilization_pct: 10, avg_score: 1.2, calc_time_ms: 3 },
+      trunk: { width: 0.85, depth: 1.25, height: 0.5 },
     };
     render(<PlannerProvider><Loader payload={payload} /><SummaryCard /></PlannerProvider>);
     await userEvent.click(screen.getByText("load"));

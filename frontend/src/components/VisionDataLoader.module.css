@@ -1,0 +1,15 @@
+.loader { display: flex; flex-direction: column; gap: 6px; }
+
+.fileButton {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 8px 10px; border-radius: 8px;
+  background: var(--color-segment-bg); color: var(--color-text-primary);
+  font-weight: 600; font-size: 12px; cursor: pointer; text-align: center;
+}
+.fileButton input {
+  position: absolute; inset: 0; opacity: 0; cursor: pointer;
+}
+
+.fileName { font-size: 11px; color: var(--color-text-secondary); word-break: break-all; }
+.hint { font-size: 11px; color: var(--color-text-secondary); margin: 0; }

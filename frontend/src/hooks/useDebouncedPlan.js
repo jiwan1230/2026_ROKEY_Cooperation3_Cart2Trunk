@@ -18,7 +18,7 @@ export function useDebouncedPlan() {
   // 요청"인지 확인해서 아니면 조용히 버린다.
   const requestIdRef = useRef(0);
 
-  const { trunkMap, boxesText, params, boxSourceLabel } = state;
+  const { trunkMap, boxesText, params, boxSourceLabel, boxSnapshotId } = state;
 
   useEffect(() => {
     if (!trunkMap) return undefined;
@@ -51,6 +51,7 @@ export function useDebouncedPlan() {
         allow_stacking: params.allowStacking,
         allow_rotation: params.allowRotation,
         fixed_order: params.fixedOrder,
+        box_snapshot_id: boxSnapshotId,
       })
         .then((result) => {
           if (requestId === requestIdRef.current) {
@@ -69,5 +70,5 @@ export function useDebouncedPlan() {
 
     return () => clearTimeout(timerRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trunkMap, boxesText, params, boxSourceLabel]);
+  }, [trunkMap, boxesText, params, boxSourceLabel, boxSnapshotId]);
 }

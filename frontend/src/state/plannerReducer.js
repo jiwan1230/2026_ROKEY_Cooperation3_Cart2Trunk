@@ -20,6 +20,12 @@ export const initialState = {
   boxPresetName: "",
   boxesText: "[]",
   boxSourceLabel: "custom",
+  // 박스 목록이 실제 비전(box_scan.json/all_boxes_corners_*.json)에서 온
+  // 경우에만 진짜 snapshot_id를 갖는다 - 수동 입력/프리셋/무작위 생성은
+  // null(POST /api/plan에서 생략되어 백엔드가 "manual_input:..."을 대신
+  // 채운다). LOAD_VISION_BOXES에서만 값이 채워지고, 그 외 박스 목록을
+  // 바꾸는 모든 액션에서 다시 null로 리셋된다.
+  boxSnapshotId: null,
   params: { ...DEFAULT_STRATEGY_PARAMS },
   planState: "NOT_COMPUTED", // NOT_COMPUTED | COMPUTING | COMPUTED | APPROVED
   result: null,
@@ -71,15 +77,29 @@ export function plannerReducer(state, action) {
     case "SELECT_PRESET": {
       const boxes = state.boxPresets[action.payload] || [];
       return invalidateIfNeeded({
-        ...state, boxPresetName: action.payload,
+        ...state, boxPresetName: action.payload, boxSnapshotId: null,
         boxesText: JSON.stringify(boxes, null, 2), boxSourceLabel: action.payload,
       });
     }
     case "SET_BOXES_TEXT":
-      return invalidateIfNeeded({ ...state, boxesText: action.payload, boxSourceLabel: "custom" });
+      return invalidateIfNeeded({
+        ...state, boxesText: action.payload, boxSourceLabel: "custom", boxSnapshotId: null,
+      });
     case "GENERATE_RANDOM_BOXES":
       return invalidateIfNeeded({
-        ...state, boxesText: JSON.stringify(action.payload, null, 2), boxSourceLabel: "random",
+        ...state, boxesText: JSON.stringify(action.payload, null, 2),
+        boxSourceLabel: "random", boxSnapshotId: null,
+      });
+    // 비전(준형)이 만드는 box_scan.json/all_boxes_corners_*.json 파일을 불러와
+    // vision_adapter가 변환해준 단순 박스 목록 + 진짜 snapshot_id를 그대로
+    // 반영한다 - "팀원 데이터가 준비되면 그것만 넣어서 실행"하려는 목적.
+    case "LOAD_VISION_BOXES":
+      return invalidateIfNeeded({
+        ...state,
+        boxesText: JSON.stringify(action.payload.boxes, null, 2),
+        boxSourceLabel: action.payload.sourceLabel,
+        boxSnapshotId: action.payload.snapshotId,
+        boxPresetName: "",
       });
     case "SET_PARAM":
       return invalidateIfNeeded({

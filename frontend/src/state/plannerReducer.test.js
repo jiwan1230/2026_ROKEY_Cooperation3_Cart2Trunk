@@ -66,4 +66,22 @@ describe("plannerReducer", () => {
     expect(next.planState).toBe("NOT_COMPUTED");
     expect(next.pendingTask).toBeNull();
   });
+
+  it("loads vision boxes with their real snapshot id", () => {
+    const payload = {
+      boxes: [{ id: "BOX_01", width: 0.3, depth: 0.2, height: 0.15 }],
+      snapshotId: "box_scan_001",
+      sourceLabel: "vision:box_scan_001",
+    };
+    const next = plannerReducer(initialState, { type: "LOAD_VISION_BOXES", payload });
+    expect(JSON.parse(next.boxesText)).toEqual(payload.boxes);
+    expect(next.boxSnapshotId).toBe("box_scan_001");
+    expect(next.boxSourceLabel).toBe("vision:box_scan_001");
+  });
+
+  it("clears the vision snapshot id when the box list changes some other way", () => {
+    const withVision = { ...initialState, boxSnapshotId: "box_scan_001" };
+    const next = plannerReducer(withVision, { type: "SET_BOXES_TEXT", payload: "[]" });
+    expect(next.boxSnapshotId).toBeNull();
+  });
 });
