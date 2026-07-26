@@ -1,9 +1,18 @@
-"""MSI2(Isaac Sim PC): 하드웨어 제어 계층 - 리프트 + 모바일 베이스(홀로노믹).
+"""MSI2(Isaac Sim PC): 하드웨어 제어 계층 - 리프트 + 모바일 베이스(홀로노믹) + 그리퍼.
 
 Isaac Sim은 물리 프림/Articulation 핸들을 하나의 프로세스 안에서만 공유할 수 있어서,
 mobile_base/lift/m0609/gripper 컨트롤러를 별도 `ros2 run` 프로세스로 쪼갤 수 없다 -
 전부 이 노드(`isaac_python`으로 실행하는 하나의 SimulationApp 프로세스) 안에서 살아야
-한다. m0609/gripper는 이후 이 파일에 이어 붙인다.
+한다. m0609(RMPflow)는 이후 이 파일에 이어 붙인다.
+
+[그리퍼 검증용 테스트 박스]
+DynamicSuctionGripper.close()는 set_target()으로 미리 지정한 프림에 대해서만
+기하 조건(수평/수직 오차가 허용치 이내)을 만족해야 흡착한다 - 아직 m0609_controller
+(RMPflow)가 없어서 팔을 실제로 움직여 박스에 접근시킬 수 없으므로, 이 슬라이스는
+그리퍼 팁의 "지금 위치"(스폰 직후 기본 관절 자세) 바로 아래에 작은 테스트 박스를
+하나 놓고 그 박스를 target으로 미리 등록해둔다 - 팔이 움직이기 시작하면(다음
+슬라이스) 이 테스트 박스 배치는 의미가 없어지고 실제 카트/박스 배치로 교체해야
+한다.
 
 [모바일 베이스는 "저수준 속도 제어"까지만 - "목표 지점으로 주행"은 여기 없음]
 100.py의 drive_to()/drive_until()(비례제어+정체감지+속도 스무딩으로 목표 (x,y,yaw)까지
@@ -43,6 +52,9 @@ EDU 저장소 100.cart_to_trunk_dual_side_holonomic.py에서 그대로 가져왔
     /mobile_base/cmd_vel (geometry_msgs/Twist, subscribe)  - 로봇 로컬 프레임 속도(linear.x=vx,
                                                               linear.y=vy, angular.z=wz)
     /mobile_base/state  (geometry_msgs/PoseStamped, publish) - 현재 섀시 world pose
+    /gripper/activate   (std_srvs/Trigger, service)        - 흡착 시도(기하 조건 안 맞으면 실패 반환)
+    /gripper/release    (std_srvs/Trigger, service)        - 흡착 해제
+    /gripper/state      (std_msgs/Bool, publish)           - true=흡착 중
 
 실행:
     HEADLESS=1 isaac_python platform_controller_node.py
@@ -75,6 +87,7 @@ if os.path.isdir(_ROS2_BRIDGE_HUMBLE):
     os.environ["LD_LIBRARY_PATH"] = lib_dir + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
 os.environ.setdefault("RMW_IMPLEMENTATION", "rmw_fastrtps_cpp")
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -83,12 +96,15 @@ from pxr import Usd, UsdGeom, UsdPhysics, UsdShade, Sdf, Gf
 
 from isaacsim.core.api import World
 from isaacsim.core.api.materials.physics_material import PhysicsMaterial
+from isaacsim.core.api.objects import FixedCuboid
 from isaacsim.core.prims import SingleArticulation
 from isaacsim.core.utils.types import ArticulationAction
+from isaacsim.robot.manipulators.grippers.surface_gripper import SurfaceGripper
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32
+from std_msgs.msg import Bool, Float32
+from std_srvs.srv import Trigger
 from geometry_msgs.msg import Twist, PoseStamped
 
 # ============================================================
@@ -128,6 +144,22 @@ LIFT_MIN = MEASURED_CHASSIS_TOP_OFFSET + M0609_MOUNT_Z_ABOVE_CHASSIS_TOP
 LIFT_MAX = LIFT_MIN + 0.35  # 100.py와 동일값 - 트렁크 STAGE 3.x가 이 이름을 직접 참조하므로 절대 바꾸지 않는다.
 
 CHASSIS_SPAWN_XY = (0.0, 0.0)
+
+# ---------------- 91.cart_pick_holonomic.py/100.py와 동일 - 그리퍼 ----------------
+EE_LINK_NAME = "link_6"
+GRIPPER_BODY_NAME = "vgp20_suction_plate"
+GRASP_HORIZONTAL_MARGIN = 0.03
+GRASP_VERTICAL_TOLERANCE = 0.02
+
+_GRIPPER_RANGE_JSON = Path(_M0609_DIR) / "Collected_m0609_vgp20_camera" / "_gripper_physical_range.json"
+if _GRIPPER_RANGE_JSON.exists():
+    _range = json.loads(_GRIPPER_RANGE_JSON.read_text())
+    TIP_LOCAL_OFFSET = tuple(_range["tip_local_offset"])
+else:
+    TIP_LOCAL_OFFSET = (0.0, 0.0, 0.0188)
+
+# 그리퍼 검증용 테스트 박스(모듈 docstring 참고) - m0609_controller가 생기기 전까지만 유효.
+TEST_BOX_HALF_HEIGHT = 0.05
 
 # 리프트가 한 main-loop 반복(world.step() 1회)마다 목표를 향해 움직일 수 있는 최대량(m).
 # 100.py의 move_lift_to(steps=90)이 LIFT_TRAVEL_M(0.75)을 90스텝에 나눠 움직인 것과
@@ -339,6 +371,78 @@ def mount_m0609(stage, initial_h):
     return m0609_path, base_link_path, lift_translate_op, lift_scale_op
 
 
+class DynamicSuctionGripper(SurfaceGripper):
+    """100.cart_to_trunk_dual_side_holonomic.py와 동일 - 원통형(수평/수직 분리) 흡착 판정.
+    구형 거리 판정은 수평/수직 오차를 하나로 합쳐서 봐서, 스캔 좌표 기반 목표에 수평
+    오차가 있으면 수직 여유를 통째로 잡아먹는 문제가 있었다(91.cart_pick_holonomic.py에서
+    실측 확인 후 교체)."""
+
+    def __init__(self, end_effector_prim_path, gripper_body_path, tip_local_offset=(0.0, 0.0, 0.0)):
+        SurfaceGripper.__init__(self, end_effector_prim_path=end_effector_prim_path, surface_gripper_path="")
+        self._gripper_body_path = gripper_body_path
+        self._tip_local_offset = Gf.Vec3d(*tip_local_offset)
+        self._joint_path = f"{gripper_body_path}/suction_attach_joint"
+        self._attached = False
+        self._target_prim_path = None
+        self._half_height = 0.0
+        self._horizontal_tolerance = 0.0
+        self._vertical_tolerance = 0.0
+
+    def set_target(self, target_prim_path, half_height, horizontal_tolerance, vertical_tolerance):
+        self._target_prim_path = target_prim_path
+        self._half_height = half_height
+        self._horizontal_tolerance = horizontal_tolerance
+        self._vertical_tolerance = vertical_tolerance
+
+    def close(self) -> None:
+        if self._attached or self._target_prim_path is None:
+            return
+        stage = omni.usd.get_context().get_stage()
+        target_prim = stage.GetPrimAtPath(self._target_prim_path)
+        if not target_prim.IsValid():
+            return
+        gripper_mat = UsdGeom.Xformable(stage.GetPrimAtPath(self._gripper_body_path)).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        target_mat = UsdGeom.Xformable(target_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        target_pos = target_mat.ExtractTranslation()
+        tip_world = gripper_mat.Transform(self._tip_local_offset)
+        horiz_dist = float(np.hypot(tip_world[0] - target_pos[0], tip_world[1] - target_pos[1]))
+        vert_gap = float(tip_world[2] - (target_pos[2] + self._half_height))
+        if horiz_dist > self._horizontal_tolerance or abs(vert_gap) > self._vertical_tolerance:
+            return
+        rel_local = target_mat.GetInverse().Transform(tip_world)
+        gripper_rot = gripper_mat.ExtractRotationQuat()
+        target_rot = target_mat.ExtractRotationQuat()
+        local_rot1 = target_rot.GetInverse() * gripper_rot
+        joint = UsdPhysics.FixedJoint.Define(stage, self._joint_path)
+        joint.CreateBody0Rel().SetTargets([Sdf.Path(self._gripper_body_path)])
+        joint.CreateBody1Rel().SetTargets([Sdf.Path(self._target_prim_path)])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(self._tip_local_offset))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(rel_local))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(local_rot1))
+        self._attached = True
+        print(f"  [흡착] horiz={horiz_dist:.4f}m vert_gap={vert_gap:+.4f}m -> {self._joint_path} 생성", flush=True)
+
+    def open(self) -> None:
+        if self._attached:
+            stage = omni.usd.get_context().get_stage()
+            if stage.GetPrimAtPath(self._joint_path).IsValid():
+                stage.RemovePrim(self._joint_path)
+        self._attached = False
+
+    def is_closed(self) -> bool:
+        return self._attached
+
+    def is_open(self) -> bool:
+        return not self._attached
+
+
+def get_world_pos(prim):
+    """100.cart_to_trunk_dual_side_holonomic.py와 동일."""
+    mat = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    return np.array(mat.ExtractTranslation())
+
+
 # ============================================================
 # 씬 부트스트랩
 # ============================================================
@@ -391,6 +495,51 @@ def set_lift_height(h: float) -> None:
     lift_translate_op.Set(Gf.Vec3d(float(chassis_pos[0]), float(chassis_pos[1]), column_base_z + column_len / 2.0))
 
 
+# ---------------- 그리퍼 + 검증용 테스트 박스 ----------------
+gripper_body_path = f"{m0609_path}/{GRIPPER_BODY_NAME}"
+ee_path = f"{m0609_path}/{EE_LINK_NAME}"
+
+# M0609의 articulation root(base_link)는 root_joint 제거로 아무 조인트에도 안 묶인
+# 자유물체다 - set_lift_height()가 매 스텝 그걸 섀시 기준으로 재배치해줘야 계속 떠
+# 있는다(100.py의 step_hold()와 같은 이유). 섀시/조인트가 물리 접촉·강성으로 실제
+# 정지 자세에서도 다물체 접촉(섀시-바닥-바퀴-롤러) 보정으로 팁이 초당 mm 단위로
+# 계속 아주 천천히 밀려나는 걸 실측으로 확인함(고정 스텝/수렴 감지 둘 다 시도했지만,
+# 짧은 구간에서는 "수렴한 것처럼" 보여도 누적되면 수 cm까지 갔다) - 아직
+# m0609_controller(RMPflow로 실제 목표를 계속 추종)가 없어 팔이 "가만히 버티기만"
+# 하는 지금 상태에서는 완벽히 고정된 팁 위치를 기대할 수 없다. 그래서 이 테스트
+# 박스는 실제 파지 정밀도가 아니라 "그리퍼 ROS 서비스 배선 자체"만 검증하는 용도로
+# 한정하고, 그 목적에 맞게 여유 있는 허용치(GRASP_*보다 훨씬 큼)를 쓴다 - 실제 파지
+# 정밀도 검증은 m0609_controller가 생겨서 팔이 능동으로 접근할 수 있을 때 다시 한다.
+_TEST_TARGET_TOLERANCE_M = 0.1
+
+for _ in range(100):
+    set_lift_height(lift_state["h"])
+    world.step(render=not HEADLESS)
+
+gripper = DynamicSuctionGripper(
+    end_effector_prim_path=ee_path, gripper_body_path=gripper_body_path, tip_local_offset=TIP_LOCAL_OFFSET,
+)
+
+_gripper_body_prim = stage.GetPrimAtPath(gripper_body_path)
+_tip_world = np.array(
+    UsdGeom.Xformable(_gripper_body_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    .Transform(Gf.Vec3d(*TIP_LOCAL_OFFSET))
+)
+_test_box_center = np.array([_tip_world[0], _tip_world[1], _tip_world[2] - TEST_BOX_HALF_HEIGHT])
+# FixedCuboid(중력 영향 없는 정지 프림) - DynamicCuboid를 쓰면 그리퍼가 실제로 잡기
+# 전까지 중력으로 계속 떨어져서, 활성화 호출 시점의 실제 위치가 배치 시점과 어긋난다.
+test_box = FixedCuboid(
+    prim_path="/World/GripperTestBox", name="gripper_test_box",
+    position=_test_box_center, scale=np.array([0.1, 0.1, 2 * TEST_BOX_HALF_HEIGHT]),
+    color=np.array([0.2, 0.6, 0.9]),
+)
+gripper.set_target(
+    "/World/GripperTestBox", half_height=TEST_BOX_HALF_HEIGHT,
+    horizontal_tolerance=_TEST_TARGET_TOLERANCE_M, vertical_tolerance=_TEST_TARGET_TOLERANCE_M,
+)
+print(f"[그리퍼] 테스트 박스를 팁 위치({_tip_world}) 바로 아래에 배치, target 등록 완료", flush=True)
+
+
 # ============================================================
 # ROS 2 인터페이스 (표준 메시지만)
 # ============================================================
@@ -413,8 +562,12 @@ class PlatformControllerNode(Node):
         self.create_subscription(Twist, "/mobile_base/cmd_vel", self._on_cmd_vel, 10)
         self._base_state_pub = self.create_publisher(PoseStamped, "/mobile_base/state", 10)
 
+        self.create_service(Trigger, "/gripper/activate", self._on_gripper_activate)
+        self.create_service(Trigger, "/gripper/release", self._on_gripper_release)
+        self._gripper_state_pub = self.create_publisher(Bool, "/gripper/state", 10)
+
         self.get_logger().info(
-            f"platform_controller_node ready (lift + mobile_base) - "
+            f"platform_controller_node ready (lift + mobile_base + gripper) - "
             f"LIFT_MIN={LIFT_MIN:.3f} LIFT_MAX={LIFT_MAX:.3f}"
         )
 
@@ -462,6 +615,23 @@ class PlatformControllerNode(Node):
         msg.pose.orientation.w = float(w)
         self._base_state_pub.publish(msg)
 
+    def _on_gripper_activate(self, request, response):
+        gripper.close()
+        response.success = gripper.is_closed()
+        response.message = "흡착 성공" if response.success else "흡착 실패(대상 기하 조건 밖 - 접근 자세를 확인하세요)"
+        return response
+
+    def _on_gripper_release(self, request, response):
+        gripper.open()
+        response.success = True
+        response.message = "흡착 해제"
+        return response
+
+    def publish_gripper_state(self) -> None:
+        msg = Bool()
+        msg.data = gripper.is_closed()
+        self._gripper_state_pub.publish(msg)
+
 
 def main():
     rclpy.init()
@@ -479,6 +649,7 @@ def main():
             if i % publish_every_n == 0:
                 node.publish_lift_state()
                 node.publish_base_state()
+                node.publish_gripper_state()
     finally:
         node.destroy_node()
         rclpy.shutdown()
