@@ -18,3 +18,8 @@ MAP_QUALITY_LOW = 'MAP_QUALITY_LOW'
 ACTION_TIMEOUT = 'ACTION_TIMEOUT'
 ACTION_SERVER_UNAVAILABLE = 'ACTION_SERVER_UNAVAILABLE'
 GOAL_REJECTED = 'GOAL_REJECTED'
+
+# cart2trunk_motion (ExecutePickPlace)
+PLATFORM_UNAVAILABLE = 'PLATFORM_UNAVAILABLE'  # platform_controller_node의 상태 토픽이 안 들어옴
+GRASP_FAILED = 'GRASP_FAILED'  # /gripper/activate가 success=False 반환(기하 조건 밖)
+ROBOT_TIMEOUT = 'ROBOT_TIMEOUT'  # drive_to/move_link6_smooth 폐루프가 정체 감지로 중단

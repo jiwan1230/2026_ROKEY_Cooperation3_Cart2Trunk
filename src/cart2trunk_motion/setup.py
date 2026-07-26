@@ -15,7 +15,10 @@ setup(
     zip_safe=True,
     maintainer='jiwan',
     maintainer_email='gwanshin12301230@gmail.com',
-    description='Action servers composing platform controllers into scan/pick/transport/place task sequences',
+    description=(
+        'Action servers composing platform controllers into '
+        'scan/pick/transport/place task sequences'
+    ),
     license='Apache-2.0',
     extras_require={
         'test': [
@@ -24,6 +27,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'execute_pick_place_action_server = '
+            'cart2trunk_motion.execute_pick_place_action_server:main',
         ],
     },
 )

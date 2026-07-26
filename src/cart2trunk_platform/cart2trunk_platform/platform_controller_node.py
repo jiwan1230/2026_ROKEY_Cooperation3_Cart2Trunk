@@ -79,6 +79,8 @@ EDU 저장소 100.cart_to_trunk_dual_side_holonomic.py에서 그대로 가져왔
     /gripper/state      (std_msgs/Bool, publish)           - true=흡착 중
     /m0609/move_to_pose (geometry_msgs/PoseStamped, subscribe) - link_6 목표 world pose(RMPflow IK)
     /m0609/state        (geometry_msgs/PoseStamped, publish)   - 현재 link_6 world pose
+    /gripper/tip_pose   (geometry_msgs/PoseStamped, publish)   - 현재 흡착 팁 world pose(link_6과
+                        고정 마운트 오프셋만큼 떨어져 있음 - cart2trunk_motion 폐루프 접근용)
 
 실행:
     HEADLESS=1 isaac_python platform_controller_node.py
@@ -126,7 +128,10 @@ from isaacsim.core.utils.rotations import euler_angles_to_quat
 from isaacsim.core.utils.types import ArticulationAction
 from isaacsim.robot.manipulators.grippers.surface_gripper import SurfaceGripper
 
-_M0609_DIR = "/home/rokey/2026_ROKEY_Cooperation3_EDU/isaacpjt/M0609"
+# HANDOFF_MSI2.md 2.3절 - M0609 자산(RMPflow/URDF/그리퍼 USD)은 git에 없고 PC마다
+# 로컬 경로가 다르다(레노버 백업 위치와 실제 MSI2 로컬 사본 위치가 서로 다름이
+# 실측 확인됨) - 하드코딩 대신 CART2TRUNK_M0609_DIR 환경변수로 받는다.
+_M0609_DIR = os.environ.get("CART2TRUNK_M0609_DIR", "/home/rokey/2026_ROKEY_Cooperation3_EDU/isaacpjt/M0609")
 _RMPFLOW_DIR = str(Path(_M0609_DIR) / "rmpflow")
 if _RMPFLOW_DIR not in sys.path:
     sys.path.insert(0, _RMPFLOW_DIR)
@@ -180,7 +185,11 @@ CHASSIS_SPAWN_XY = (0.0, 0.0)
 
 # ---------------- 91.cart_pick_holonomic.py/100.py와 동일 - 그리퍼 ----------------
 EE_LINK_NAME = "link_6"
-GRIPPER_BODY_NAME = "vgp20_suction_plate"
+# M0609 USD 자산마다 그리퍼 바디 prim 이름이 다르다(실측 확인 - 어떤 사본은
+# "vgp20_suction_plate", 이 환경에서 실제로 받은 사본은 그냥 "vgp20") - 자산이
+# git에 없어 사본마다 구조가 다를 수 있다는 HANDOFF_MSI2.md 2.3절 경고 그대로라
+# 하드코딩 대신 환경변수로 덮어쓸 수 있게 한다.
+GRIPPER_BODY_NAME = os.environ.get("CART2TRUNK_GRIPPER_BODY_NAME", "vgp20_suction_plate")
 GRASP_HORIZONTAL_MARGIN = 0.03
 GRASP_VERTICAL_TOLERANCE = 0.02
 
@@ -602,6 +611,23 @@ def _ee_world_pose():
     return position, quat_wxyz
 
 
+def _gripper_tip_world_pose():
+    """100.py의 measure_tip_world_pos()와 동일한 계산(gripper_body_path의 실제
+    world transform + TIP_LOCAL_OFFSET) - link_6과 흡착 팁 사이엔 고정 마운트
+    오프셋(실측 13cm대)이 있어서 link_6 자세만으로는 팁이 어디 있는지 알 수
+    없다. cart2trunk_motion이 이 오프셋 상수를 몰라도 폐루프 제어를 할 수
+    있도록, 그 계산을 아는 이 노드가 직접 재고 /gripper/tip_pose로 발행한다.
+    회전은 link_6과 함께 움직이는 그리퍼 바디의 회전을 그대로 쓴다(팁 자체는
+    별도 관절이 없어 그리퍼 바디와 항상 같은 방향)."""
+    gripper_body_prim = stage.GetPrimAtPath(gripper_body_path)
+    mat = UsdGeom.Xformable(gripper_body_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    position = np.array(mat.Transform(Gf.Vec3d(*TIP_LOCAL_OFFSET)), dtype=float)
+    q = mat.ExtractRotationQuat()
+    imag = q.GetImaginary()
+    quat_wxyz = np.array([q.GetReal(), imag[0], imag[1], imag[2]], dtype=float)
+    return position, quat_wxyz
+
+
 # 시작 시점의 실제 link_6 자세를 초기 목표로 잡는다 - 그래야 노드가 뜨자마자 임의
 # 위치로 팔이 튀지 않고, 실제 /m0609/move_to_pose 명령이 올 때까지 제자리를 유지한다.
 _initial_ee_pos, _initial_ee_quat_wxyz = _ee_world_pose()
@@ -636,6 +662,7 @@ class PlatformControllerNode(Node):
         self._m0609_target_quat_wxyz = _initial_ee_quat_wxyz
         self.create_subscription(PoseStamped, "/m0609/move_to_pose", self._on_m0609_move_to_pose, 10)
         self._m0609_state_pub = self.create_publisher(PoseStamped, "/m0609/state", 10)
+        self._gripper_tip_pose_pub = self.create_publisher(PoseStamped, "/gripper/tip_pose", 10)
 
         self.get_logger().info(
             f"platform_controller_node ready (lift + mobile_base + gripper + m0609) - "
@@ -733,6 +760,21 @@ class PlatformControllerNode(Node):
         msg.pose.orientation.w = float(w)
         self._m0609_state_pub.publish(msg)
 
+    def publish_gripper_tip_pose(self) -> None:
+        pos, quat_wxyz = _gripper_tip_world_pose()
+        msg = PoseStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "world"
+        msg.pose.position.x = float(pos[0])
+        msg.pose.position.y = float(pos[1])
+        msg.pose.position.z = float(pos[2])
+        w, x, y, z = quat_wxyz
+        msg.pose.orientation.x = float(x)
+        msg.pose.orientation.y = float(y)
+        msg.pose.orientation.z = float(z)
+        msg.pose.orientation.w = float(w)
+        self._gripper_tip_pose_pub.publish(msg)
+
 
 def main():
     rclpy.init()
@@ -753,6 +795,7 @@ def main():
                 node.publish_base_state()
                 node.publish_gripper_state()
                 node.publish_m0609_state()
+                node.publish_gripper_tip_pose()
     finally:
         node.destroy_node()
         rclpy.shutdown()

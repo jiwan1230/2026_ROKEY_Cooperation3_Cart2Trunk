@@ -1,4 +1,17 @@
+# task.target_pose is trunk_frame-local (see HANDOFF_MSI2.md 6.2) - executor
+# converts to m0609_base using trunk_pose below before commanding the arm.
 PickPlaceTask task
+
+# The cart-side Box3D this task's box_id refers to (detected_pose already in
+# m0609_base per 6.2) - the pick location. PickPlaceTask alone only carries
+# where to place, not where to pick up from, so the coordinator forwards the
+# matching ScanBoxes detection here.
+Box3D source_box
+
+# TrunkMap.trunk_pose from the same trunk scan the task was planned against -
+# translation-only offset (see cart2trunk_common.geometry.add_offset) from
+# trunk_frame to m0609_base.
+geometry_msgs/Pose trunk_pose
 ---
 bool success
 string execution_id

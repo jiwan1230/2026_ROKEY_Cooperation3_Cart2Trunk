@@ -187,6 +187,12 @@ class MissionCoordinatorNode(Node):
                 task = plan_result.tasks[0]
                 pick_place_goal = ExecutePickPlace.Goal()
                 pick_place_goal.task = task
+                # PickPlaceTask만으로는 어디서 집을지(카트 위 위치)를 알 수 없다 -
+                # 이번 스캔에서 이 box_id로 검출된 Box3D(detected_pose가 곧 pick
+                # 위치, m0609_base 기준)와, target_pose를 trunk_frame -> m0609_base로
+                # 바꾸는 데 필요한 trunk_pose를 함께 넘긴다 (ExecutePickPlace.action 참고).
+                pick_place_goal.source_box = box_by_id[task.box_id]
+                pick_place_goal.trunk_pose = trunk_result.trunk_map.trunk_pose
                 exec_result = self._call_action(
                     self._execute_pick_place_client, pick_place_goal, '/robot/execute_pick_place')
 
