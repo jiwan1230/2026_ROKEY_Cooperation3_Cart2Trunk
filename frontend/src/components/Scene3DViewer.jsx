@@ -83,6 +83,20 @@ export default function Scene3DViewer() {
     setScenarioError(null);
   };
 
+  // ControlPanel의 "무작위 N개 생성"(또는 프리셋 선택, 직접 수정)은
+  // state.boxesText를 바꾸는데, 시나리오 미리보기 중엔 그게 화면에 전혀
+  // 반영이 안 됐다("무작위 생성이 안 먹힌다"는 피드백) - boxesText가
+  // 바뀌면 사용자가 실시간 계획 쪽을 다시 만지고 있다는 뜻이므로, 시나리오
+  // 미리보기를 자동으로 해제하고 실시간 화면으로 돌아간다.
+  const prevBoxesTextRef = useRef(state.boxesText);
+  useEffect(() => {
+    if (state.boxesText !== prevBoxesTextRef.current) {
+      prevBoxesTextRef.current = state.boxesText;
+      if (activeScenarioId) handleExitScenario();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.boxesText]);
+
   // 시나리오가 활성화되어 있으면 이후 모든 파생 상태(trunk/placed/카트
   // 적재/Before-After/순서대로 재생)가 scenarioResult 기준으로 계산된다 -
   // state.result 기준 코드를 두 번 만들지 않고 그대로 재사용한다.
