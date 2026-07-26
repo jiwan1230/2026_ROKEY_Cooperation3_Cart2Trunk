@@ -49,6 +49,8 @@ source install/setup.bash
 - `cart2trunk_hmi` — Flask/WebSocket 백엔드
 - `cart2trunk_bringup` — Host별 launch 파일
 - `cart2trunk_test_scenarios` — 축소형(테이블+크레이트) 통합 테스트 리그 — EDU 저장소 35~46번 계열의 후신
+- `web/` — 웹 플래너(React+Flask). ROS2 노드가 아니라 독립 프로세스로 뜨는 사람용 UI/실험 도구 - 실행 방법은 `web/README.md` 참고. `web/backend`는 `algorism/`(아래)을 직접 import해서 적재 계획을 미리보기하고, `/api/robot/*`는 아직 더미(TODO(MSI2) - 실제 ROS2 트리거로 교체 예정)
+- `algorism/` — EDU 저장소 algorism 브랜치의 번호 붙은 알고리즘 스크립트 원본을 그대로 벤더링한 참조 사본(수정 금지). `web/backend`만 이걸 직접 import한다 - ROS2 액션 서버들이 실제로 쓰는 것은 이걸 포팅한 `cart2trunk_planning/core`이며, 두 사본은 파라미터 지원 범위가 다를 수 있다(웹 쪽이 더 풍부함, 아직 미통합)
 
 ## EDU 저장소 코드의 실제 이관 대상 (2026-07-23 정정)
 
