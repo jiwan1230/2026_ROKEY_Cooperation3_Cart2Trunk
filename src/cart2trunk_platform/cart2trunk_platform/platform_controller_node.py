@@ -226,13 +226,15 @@ HUB_THICKNESS = WHEEL_RADIUS * 0.55
 CHASSIS_LENGTH_EXTENDED = 1.00
 WHEEL_MOUNT_HALF_L = BASE_LENGTH / 2.0 - WHEEL_RADIUS * 0.6
 _wheel_half_thickness_y = HUB_THICKNESS / 2.0 + ROLLER_LENGTH * 0.5 + ROLLER_RADIUS
+# 100.py와 동일 공식 - CART_CLEAR_X(회전 안전지대) 계산에 필요(아래 참고).
+CHASSIS_HALF_LENGTH_EFFECTIVE = CHASSIS_LENGTH_EXTENDED / 2.0 + WHEEL_RADIUS * 0.6
+CHASSIS_HALF_WIDTH_EFFECTIVE = BASE_WIDTH / 2.0 + _wheel_half_thickness_y * 1.3
+CART_STANDOFF_MARGIN = 0.10  # 100.py의 CART_STANDOFF_MARGIN과 동일값.
 
 # 100.py와 동일 - MEASURED_CHASSIS_TOP_OFFSET은 실측 상수(스크린샷 대조로 확인된 값).
 MEASURED_CHASSIS_TOP_OFFSET = 0.0180
 LIFT_MIN = MEASURED_CHASSIS_TOP_OFFSET + M0609_MOUNT_Z_ABOVE_CHASSIS_TOP
 LIFT_MAX = LIFT_MIN + 0.35  # 100.py와 동일값 - 트렁크 STAGE 3.x가 이 이름을 직접 참조하므로 절대 바꾸지 않는다.
-
-CHASSIS_SPAWN_XY = (0.0, 0.0)
 
 # ---------------- cart2trunk_simulation - 카트/차량(트렁크) 씬 ----------------
 # 100.py의 CART_USD/CAR_USD와 동일한 usdz 에셋(git에 커밋 안 함 - M0609 자산과
@@ -241,15 +243,16 @@ CHASSIS_SPAWN_XY = (0.0, 0.0)
 _ASSET_DIR = os.environ.get("CART2TRUNK_ASSET_DIR", "/home/rokey/cobot3_ws/isaacpjt/Cart2Trunk/assets")
 CART_USD = str(Path(_ASSET_DIR) / "Metal_Shopping_Cart.usdz")
 CAR_USD = str(Path(_ASSET_DIR) / "Lexus_IS300_Trunk_Open_No_More_Hell_Room.usdz")
-# ⚠️ 아래 두 위치는 "카트 옆 standoff까지 실제로 주행해서 접근"하는 100.py의
-# CART_CLEAR_X/CART_BASE_LEFT_XY 같은 계산을 이관하지 않고, 그냥 로봇 스폰
-# 위치(CHASSIS_SPAWN_XY) 근처의 비어있는 좌표에 배치만 한 값이다(카트/차량이
-# "물리적으로 존재하고 depth 카메라로 스캔 가능하다"까지만 이번 슬라이스의
-# 목표 - cart2trunk_motion이 실제로 카트 옆으로 이동하는 로직을 구현할 때
-# 다시 튜닝해야 한다). 겹치지 않는지는 스크린샷으로 확인 필요.
-CART_SCENE_POSITION = (1.3, 0.0, 0.0)
+# ⚠️ 실측으로 찾은 버그(2026-07-27, 사용자가 뷰포트 스크린샷으로 직접 지적) - 이
+# 두 위치는 원래 100.py의 CART_POS=(0,0,0)/CAR_POS=(5,0,0)을 그대로 안 쓰고
+# "로봇 스폰 위치 근처의 비어있는 좌표"로 임의로 잡았던 값이었다(카트 1.3,
+# 차량 3.6 - 겹치지 않는지 스크린샷으로 확인 안 한 채 방치돼 있었음) - 실제로는
+# 차량 크기 때문에 카트와 거의 붙어 보일 만큼 가까웠다. 100.py와 정확히 같은
+# 값으로 맞춘다 - 두 스크립트가 같은 씬 배치를 가정해야 카트/트렁크 접근 거리
+# 튜닝(cart_standoff_m 등)도 서로 의미가 통한다.
+CART_SCENE_POSITION = (0.0, 0.0, 0.0)
 CART_SCENE_ROT_Z = 90.0
-VEHICLE_SCENE_POSITION = (3.6, 0.0, 0.0)
+VEHICLE_SCENE_POSITION = (5.0, 0.0, 0.0)
 VEHICLE_SCENE_ROT_Z = 0.0
 
 # ---------------- cart2trunk_simulation - 실시간 Depth 카메라 ROS2 브리지 ----------------
@@ -603,6 +606,17 @@ cart_scene = build_cart_with_boxes(
 build_vehicle(
     stage, simulation_app, CAR_USD, position=VEHICLE_SCENE_POSITION, rot_z=VEHICLE_SCENE_ROT_Z)
 
+# 100.py의 CART_CLEAR_X와 동일 공식(회전 안전지대) - 카트의 "길이" 축 연장선상,
+# 카트 bbox 바깥에 섀시 중심이 X축만으로 이미 안전 거리 떨어지게 스폰한다(yaw가
+# 스폰 직후 90도든 회전 도중 어떤 중간값이든, 심지어 45도여도 절대 카트와 안
+# 겹친다 - AABB가 한 축만 분리돼도 안 겹친다는 성질). cart_scene의 실측
+# bbox(cart_center_xy/cart_half_x)에 따라 매번 다시 계산된다.
+_cart_center_xy = cart_scene.cart_center_xy
+CART_CLEAR_X = (_cart_center_xy[0] + cart_scene.cart_half_x
+                + CHASSIS_HALF_LENGTH_EFFECTIVE + CHASSIS_HALF_WIDTH_EFFECTIVE
+                + CART_STANDOFF_MARGIN)
+CHASSIS_SPAWN_XY = (CART_CLEAR_X, _cart_center_xy[1])
+
 chassis_path, hub_joint_paths, k_factor = build_holonomic_base(
     stage, CHASSIS_SPAWN_XY, BASE_LENGTH, BASE_WIDTH, BASE_HEIGHT)
 
@@ -671,24 +685,35 @@ for _ in range(100):
 # 비슷한 순서)에 초기화한다 - 실측 결과 이 타이밍 자체가 크래시를 좌우하진
 # 않았지만(sensor_bridge.py 모듈 docstring 참고 - 진짜 원인은 OGN 노드였다),
 # 이미 검증된 순서라 되돌리지 않고 유지한다.
+#
+# ⚠️ 실측으로 찾은 버그(2026-07-27, RMPflow "도달 못함" 조사 중) - RSD455의
+# IMU 센서/중첩 RigidBodyAPI 정리(cleanup_camera_reference_asset)를 예전엔
+# CART2TRUNK_ENABLE_CAMERA_BRIDGE=1일 때만(카메라 데이터가 실제로 필요할 때만)
+# 호출했다 - 그런데 이건 "카메라 데이터 품질" 문제가 아니라 M0609 articulation
+# 자체의 물리적 정합성 문제였다(9.attach_vgp20_camera.py 원문 주석: 이 IMU가
+# "병합 articulation velocity tensor shape" 에러의 원인). 카메라 브리지를 끈
+# 채로 그리퍼 목표 접근처럼 팔을 크게 움직이는 시나리오를 반복 실측한 결과,
+# 이 정리를 안 하면 섀시/팔 pose가 NaN으로 발산하는 게 재현됐다(카메라 브리지를
+# 켠 채로 한 카트 스캔 테스트들에서는 이 정리가 항상 됐었어서 이 문제 자체가
+# 안 드러났었다). 그래서 카메라 사용 여부와 무관하게 항상 정리한다.
+_depth_camera_prim_path, _all_camera_candidates = find_camera_prim_path(
+    stage, m0609_path, DEPTH_CAMERA_NAME_HINT)
+if _depth_camera_prim_path is None:
+    raise RuntimeError(f"카메라 프림을 못 찾음 - 발견된 카메라 후보: {_all_camera_candidates}")
+cleanup_camera_reference_asset(stage, _depth_camera_prim_path)
+
 depth_camera = None
 if os.environ.get("CART2TRUNK_ENABLE_CAMERA_BRIDGE", "0") == "1":
-    _depth_camera_prim_path, _all_camera_candidates = find_camera_prim_path(
-        stage, m0609_path, DEPTH_CAMERA_NAME_HINT)
-    if _depth_camera_prim_path is None:
-        raise RuntimeError(f"카메라 프림을 못 찾음 - 발견된 카메라 후보: {_all_camera_candidates}")
     print(f"[CAMERA] depth 카메라: {_depth_camera_prim_path} "
           f"(후보 전체: {_all_camera_candidates})", flush=True)
-    # 9.attach_vgp20_camera.py와 동일 - RSD455에 딸려오는 IMU 센서/중첩
-    # RigidBodyAPI를 먼저 정리한다(sensor_bridge.py 함수 docstring 참고).
-    cleanup_camera_reference_asset(stage, _depth_camera_prim_path)
     depth_camera = initialize_depth_camera(_depth_camera_prim_path, CAMERA_WIDTH, CAMERA_HEIGHT)
     for _ in range(10):
         world.step(render=True)
     print(f"[CAMERA] {DEPTH_TOPIC}, {CAMERA_INFO_TOPIC} 발행 준비 완료 (frame_id={CAMERA_FRAME_ID}) - "
           f"PlatformControllerNode가 매 스텝 rclpy로 직접 발행", flush=True)
 else:
-    print("[CAMERA] CART2TRUNK_ENABLE_CAMERA_BRIDGE=1이 아니라서 카메라 브리지 비활성화", flush=True)
+    print("[CAMERA] CART2TRUNK_ENABLE_CAMERA_BRIDGE=1이 아니라서 카메라 브리지 비활성화 "
+          "(RSD455 IMU/RigidBodyAPI 정리는 이미 완료됨)", flush=True)
 
 gripper = DynamicSuctionGripper(
     end_effector_prim_path=ee_path, gripper_body_path=gripper_body_path, tip_local_offset=TIP_LOCAL_OFFSET,

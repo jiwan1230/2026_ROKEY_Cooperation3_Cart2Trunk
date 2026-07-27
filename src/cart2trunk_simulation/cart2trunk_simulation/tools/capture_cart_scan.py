@@ -163,6 +163,7 @@ def make_usd_camera_rotation(
 
 def drive_base_to_xy(
     target_xy: np.ndarray, tolerance_m: float = 0.05, max_steps: int = 1500,
+    smooth_alpha: float = 0.12,
 ) -> None:
     """holo_forward()로 모바일 베이스를 target_xy까지 몬다(99.py drive_to()와 같은
     폐루프 원리, yaw 목표 없이 현재 자세 유지). base_robot.set_world_pose()로
@@ -171,14 +172,24 @@ def drive_base_to_xy(
     NaN/영쿼터니언으로 깨졌다(실측 확인) - 실제로 몰아서 물리 상태를 안전하게
     유지한다.
 
-    [실측으로 찾은 함정] holo_forward(vx,vy,wz)의 vx/vy는 chassis 로컬 프레임
+    [실측으로 찾은 함정 1] holo_forward(vx,vy,wz)의 vx/vy는 chassis 로컬 프레임
     기준인데, chassis 자신은 BASE_PATH 부모 Xform에 BASE_FACE_ROT_Z(90도)가
     이미 적용돼 있어(build_holonomic_base) yaw=0(스폰 직후)이어도 world 프레임과
     90도 어긋나 있다 - "yaw=0이니 local==world"라고 가정하고 world 프레임 오차를
     그대로 vx/vy에 넣었더니 발산했다(실측: 6m 넘게 이탈). 99.py drive_to()와 같은
     공식(ex_l = ex_w*cos(yaw)+ey_w*sin(yaw), ey_l = -ex_w*sin(yaw)+ey_w*cos(yaw))으로
     매 스텝 실제 world 쿼터니언에서 yaw를 뽑아 오차를 로컬 프레임으로 정확히
-    회전시켜야 한다."""
+    회전시켜야 한다.
+
+    [실측으로 찾은 함정 2 - 훨씬 심각함] 이 함수는 원래 속도 스무딩 없이 매 스텝
+    비례오차를 그대로 명령했다 - 지속적인 대각선/횡이동(strafe) 구간에서
+    메카넘 롤러 접촉 솔버가 결정론적으로(같은 코드로 반복해도 항상 같은 스텝에서)
+    폭발했다(실측: 각속도가 수백 rad/s에서 시작해 스텝마다 기하급수적으로
+    커져 수백만 rad/s까지 발산, 섀시가 순간적으로 공중으로 튀어오르며 결국
+    NaN). 99.py/cart2trunk_motion.control_loops.drive_to()가 이미 하던
+    지수이동평균 속도 스무딩(SMOOTH_ALPHA=0.12)을 빼먹은 게 원인이었다 -
+    추가하자 같은 구간에서 폭발이 재현되지 않았다(A/B 테스트로 확인)."""
+    vx_s = vy_s = 0.0
     for _ in range(max_steps):
         pos, quat_wxyz = pcn.base_robot.get_world_pose()
         dx, dy = float(target_xy[0] - pos[0]), float(target_xy[1] - pos[1])
@@ -188,9 +199,11 @@ def drive_base_to_xy(
         yaw = float(np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
         local_x = dx * np.cos(yaw) + dy * np.sin(yaw)
         local_y = -dx * np.sin(yaw) + dy * np.cos(yaw)
-        vx = float(np.clip(1.0 * local_x, -0.3, 0.3))
-        vy = float(np.clip(1.0 * local_y, -0.3, 0.3))
-        pcn.base_robot.apply_action(pcn.holo_forward(vx, vy, 0.0))
+        vx_t = float(np.clip(1.0 * local_x, -0.3, 0.3))
+        vy_t = float(np.clip(1.0 * local_y, -0.3, 0.3))
+        vx_s += smooth_alpha * (vx_t - vx_s)
+        vy_s += smooth_alpha * (vy_t - vy_s)
+        pcn.base_robot.apply_action(pcn.holo_forward(vx_s, vy_s, 0.0))
         step_hold(1)
     pcn.base_robot.apply_action(pcn.holo_forward(0.0, 0.0, 0.0))
     step_hold(20)
