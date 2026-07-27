@@ -74,7 +74,15 @@ EDU 저장소 100.cart_to_trunk_dual_side_holonomic.py에서 그대로 가져왔
     /mobile_base/cmd_vel (geometry_msgs/Twist, subscribe)  - 로봇 로컬 프레임 속도(linear.x=vx,
                                                               linear.y=vy, angular.z=wz)
     /mobile_base/state  (geometry_msgs/PoseStamped, publish) - 현재 섀시 world pose
-    /gripper/activate   (std_srvs/Trigger, service)        - 흡착 시도(기하 조건 안 맞으면 실패 반환)
+    /gripper/set_target (geometry_msgs/PoseStamped, subscribe) - 흡착 대상 world pose(박스
+                        top-center, frame_id="world" 고정) - cart2trunk_motion이 GRIP 직전에
+                        발행한다. 이 노드가 cart_scene.box_objects 중 가장 가까운 실제 박스
+                        prim을 찾아 내부적으로 기억한다(box_id/prim_path는 이 노드가 다른
+                        인터페이스처럼 커스텀 메시지를 못 써서(Isaac 번들 python3.11) ROS로
+                        직접 안 받는다 - 상세 설계는 _find_nearest_box_prim() 참고).
+    /gripper/activate   (std_srvs/Trigger, service)        - 직전 /gripper/set_target으로 찾은
+                        박스에 흡착 시도(목표 없음/오래됨/기하 조건 밖이면 실패 반환 - 이번
+                        시도로 목표를 소비하므로 다음 activate 전에 set_target을 다시 보내야 함)
     /gripper/release    (std_srvs/Trigger, service)        - 흡착 해제
     /gripper/state      (std_msgs/Bool, publish)           - true=흡착 중
     /m0609/move_to_pose (geometry_msgs/PoseStamped, subscribe) - link_6 목표 world pose(RMPflow IK)
@@ -100,6 +108,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 HEADLESS = os.environ.get("HEADLESS", "0") == "1"
 
@@ -133,7 +142,6 @@ from pxr import Usd, UsdGeom, UsdPhysics, UsdShade, Sdf, Gf
 
 from isaacsim.core.api import World
 from isaacsim.core.api.materials.physics_material import PhysicsMaterial
-from isaacsim.core.api.objects import FixedCuboid
 from isaacsim.core.prims import SingleArticulation
 from isaacsim.core.utils.rotations import euler_angles_to_quat
 from isaacsim.core.utils.types import ArticulationAction
@@ -262,8 +270,20 @@ EE_LINK_NAME = "link_6"
 # git에 없어 사본마다 구조가 다를 수 있다는 HANDOFF_MSI2.md 2.3절 경고 그대로라
 # 하드코딩 대신 환경변수로 덮어쓸 수 있게 한다.
 GRIPPER_BODY_NAME = os.environ.get("CART2TRUNK_GRIPPER_BODY_NAME", "vgp20_suction_plate")
+# activate 시점(팁이 실제로 다 왔는지) 판정 - 엄격한 값.
 GRASP_HORIZONTAL_MARGIN = 0.03
 GRASP_VERTICAL_TOLERANCE = 0.02
+# /gripper/set_target 시점(world pose로 "이게 어떤 실제 박스인가"를 찾는) 판정 -
+# GRASP_*보다 넉넉하다. cart2trunk_motion이 anchor로 world 좌표를 이미 계산해
+# 넘기지만, 그 계산 자체에 검출/앵커 오차(실측 수 cm대, cart2trunk_perception
+# 검출 정확도 참고)가 있을 수 있어 "어떤 박스인지 식별"하는 단계는 여유를 둔다 -
+# 실제 흡착 가능 여부는 어차피 activate에서 GRASP_* 기준으로 다시, 더 엄격하게 본다.
+TARGET_SEARCH_HORIZONTAL_TOLERANCE_M = 0.08
+TARGET_SEARCH_VERTICAL_TOLERANCE_M = 0.08
+# /gripper/set_target 수신 후 이 시간(초)이 지나도록 /gripper/activate가 안 오면
+# 목표를 무효화한다 - 이전 박스의 낡은 목표가 다음 박스에 실수로 재사용되는 것을
+# 막는 안전장치(사용자 지시 - "이전 target이 재사용되지 않도록 해야 함").
+GRIPPER_TARGET_TIMEOUT_SEC = 1.0
 
 _GRIPPER_RANGE_JSON = Path(_M0609_DIR) / "Collected_m0609_vgp20_camera" / "_gripper_physical_range.json"
 if _GRIPPER_RANGE_JSON.exists():
@@ -271,9 +291,6 @@ if _GRIPPER_RANGE_JSON.exists():
     TIP_LOCAL_OFFSET = tuple(_range["tip_local_offset"])
 else:
     TIP_LOCAL_OFFSET = (0.0, 0.0, 0.0188)
-
-# 그리퍼 검증용 테스트 박스(모듈 docstring 참고) - m0609_controller가 생기기 전까지만 유효.
-TEST_BOX_HALF_HEIGHT = 0.05
 
 # 리프트가 한 main-loop 반복(world.step() 1회)마다 목표를 향해 움직일 수 있는 최대량(m).
 # 100.py의 move_lift_to(steps=90)이 LIFT_TRAVEL_M(0.75)을 90스텝에 나눠 움직인 것과
@@ -497,45 +514,59 @@ class DynamicSuctionGripper(SurfaceGripper):
         self._tip_local_offset = Gf.Vec3d(*tip_local_offset)
         self._joint_path = f"{gripper_body_path}/suction_attach_joint"
         self._attached = False
-        self._target_prim_path = None
-        self._half_height = 0.0
-        self._horizontal_tolerance = 0.0
-        self._vertical_tolerance = 0.0
 
-    def set_target(self, target_prim_path, half_height, horizontal_tolerance, vertical_tolerance):
-        self._target_prim_path = target_prim_path
-        self._half_height = half_height
-        self._horizontal_tolerance = horizontal_tolerance
-        self._vertical_tolerance = vertical_tolerance
-
-    def close(self) -> None:
-        if self._attached or self._target_prim_path is None:
-            return
+    def tip_world_pos(self) -> np.ndarray:
         stage = omni.usd.get_context().get_stage()
-        target_prim = stage.GetPrimAtPath(self._target_prim_path)
+        gripper_prim = stage.GetPrimAtPath(self._gripper_body_path)
+        gripper_mat = UsdGeom.Xformable(
+            gripper_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        return np.array(gripper_mat.Transform(self._tip_local_offset), dtype=float)
+
+    def close_on_prim(
+        self, target_prim_path, half_height, horizontal_tolerance, vertical_tolerance,
+    ) -> bool:
+        """target_prim_path의 top-center(prim 원점 + half_height, world +Z 기준 -
+        박스가 yaw 회전만 있고 눕지 않는다는 이 프로젝트의 가정과 동일)에 대해
+        기하 조건을 확인하고, 만족하면 실제 FixedJoint를 만든다. /gripper/set_target
+        (PlatformControllerNode._on_gripper_set_target)이 world pose로 가장 가까운
+        실제 박스 prim을 미리 찾아두면, activate 시점에 이 메서드가 그 prim을 대상으로
+        호출된다 - half_height/tolerance는 호출마다 넘겨받으므로(이전처럼 set_target()로
+        미리 고정해두지 않음) 매 흡착 시도마다 실제 대상 박스에 맞는 값을 쓸 수 있다."""
+        if self._attached:
+            return False
+        stage = omni.usd.get_context().get_stage()
+        target_prim = stage.GetPrimAtPath(target_prim_path)
         if not target_prim.IsValid():
-            return
-        gripper_mat = UsdGeom.Xformable(stage.GetPrimAtPath(self._gripper_body_path)).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-        target_mat = UsdGeom.Xformable(target_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            return False
+        gripper_prim = stage.GetPrimAtPath(self._gripper_body_path)
+        gripper_mat = UsdGeom.Xformable(
+            gripper_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        target_mat = UsdGeom.Xformable(
+            target_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
         target_pos = target_mat.ExtractTranslation()
         tip_world = gripper_mat.Transform(self._tip_local_offset)
         horiz_dist = float(np.hypot(tip_world[0] - target_pos[0], tip_world[1] - target_pos[1]))
-        vert_gap = float(tip_world[2] - (target_pos[2] + self._half_height))
-        if horiz_dist > self._horizontal_tolerance or abs(vert_gap) > self._vertical_tolerance:
-            return
+        vert_gap = float(tip_world[2] - (target_pos[2] + half_height))
+        if horiz_dist > horizontal_tolerance or abs(vert_gap) > vertical_tolerance:
+            print(f"  [흡착 실패] horiz={horiz_dist:.4f}m(허용 {horizontal_tolerance:.3f}) "
+                  f"vert_gap={vert_gap:+.4f}m(허용 {vertical_tolerance:.3f}) "
+                  f"-> {target_prim_path}", flush=True)
+            return False
         rel_local = target_mat.GetInverse().Transform(tip_world)
         gripper_rot = gripper_mat.ExtractRotationQuat()
         target_rot = target_mat.ExtractRotationQuat()
         local_rot1 = target_rot.GetInverse() * gripper_rot
         joint = UsdPhysics.FixedJoint.Define(stage, self._joint_path)
         joint.CreateBody0Rel().SetTargets([Sdf.Path(self._gripper_body_path)])
-        joint.CreateBody1Rel().SetTargets([Sdf.Path(self._target_prim_path)])
+        joint.CreateBody1Rel().SetTargets([Sdf.Path(target_prim_path)])
         joint.CreateLocalPos0Attr().Set(Gf.Vec3f(self._tip_local_offset))
         joint.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
         joint.CreateLocalPos1Attr().Set(Gf.Vec3f(rel_local))
         joint.CreateLocalRot1Attr().Set(Gf.Quatf(local_rot1))
         self._attached = True
-        print(f"  [흡착] horiz={horiz_dist:.4f}m vert_gap={vert_gap:+.4f}m -> {self._joint_path} 생성", flush=True)
+        print(f"  [흡착] horiz={horiz_dist:.4f}m vert_gap={vert_gap:+.4f}m -> {target_prim_path}에 "
+              f"{self._joint_path} 생성", flush=True)
+        return True
 
     def open(self) -> None:
         if self._attached:
@@ -626,22 +657,9 @@ def set_lift_height(h: float) -> None:
     lift_translate_op.Set(Gf.Vec3d(float(chassis_pos[0]), float(chassis_pos[1]), column_base_z + column_len / 2.0))
 
 
-# ---------------- 그리퍼 + 검증용 테스트 박스 ----------------
+# ---------------- 그리퍼 ----------------
 gripper_body_path = f"{m0609_path}/{GRIPPER_BODY_NAME}"
 ee_path = f"{m0609_path}/{EE_LINK_NAME}"
-
-# M0609의 articulation root(base_link)는 root_joint 제거로 아무 조인트에도 안 묶인
-# 자유물체다 - set_lift_height()가 매 스텝 그걸 섀시 기준으로 재배치해줘야 계속 떠
-# 있는다(100.py의 step_hold()와 같은 이유). 섀시/조인트가 물리 접촉·강성으로 실제
-# 정지 자세에서도 다물체 접촉(섀시-바닥-바퀴-롤러) 보정으로 팁이 초당 mm 단위로
-# 계속 아주 천천히 밀려나는 걸 실측으로 확인함(고정 스텝/수렴 감지 둘 다 시도했지만,
-# 짧은 구간에서는 "수렴한 것처럼" 보여도 누적되면 수 cm까지 갔다) - 아직
-# m0609_controller(RMPflow로 실제 목표를 계속 추종)가 없어 팔이 "가만히 버티기만"
-# 하는 지금 상태에서는 완벽히 고정된 팁 위치를 기대할 수 없다. 그래서 이 테스트
-# 박스는 실제 파지 정밀도가 아니라 "그리퍼 ROS 서비스 배선 자체"만 검증하는 용도로
-# 한정하고, 그 목적에 맞게 여유 있는 허용치(GRASP_*보다 훨씬 큼)를 쓴다 - 실제 파지
-# 정밀도 검증은 m0609_controller가 생겨서 팔이 능동으로 접근할 수 있을 때 다시 한다.
-_TEST_TARGET_TOLERANCE_M = 0.1
 
 for _ in range(100):
     set_lift_height(lift_state["h"])
@@ -675,25 +693,8 @@ else:
 gripper = DynamicSuctionGripper(
     end_effector_prim_path=ee_path, gripper_body_path=gripper_body_path, tip_local_offset=TIP_LOCAL_OFFSET,
 )
-
-_gripper_body_prim = stage.GetPrimAtPath(gripper_body_path)
-_tip_world = np.array(
-    UsdGeom.Xformable(_gripper_body_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-    .Transform(Gf.Vec3d(*TIP_LOCAL_OFFSET))
-)
-_test_box_center = np.array([_tip_world[0], _tip_world[1], _tip_world[2] - TEST_BOX_HALF_HEIGHT])
-# FixedCuboid(중력 영향 없는 정지 프림) - DynamicCuboid를 쓰면 그리퍼가 실제로 잡기
-# 전까지 중력으로 계속 떨어져서, 활성화 호출 시점의 실제 위치가 배치 시점과 어긋난다.
-test_box = FixedCuboid(
-    prim_path="/World/GripperTestBox", name="gripper_test_box",
-    position=_test_box_center, scale=np.array([0.1, 0.1, 2 * TEST_BOX_HALF_HEIGHT]),
-    color=np.array([0.2, 0.6, 0.9]),
-)
-gripper.set_target(
-    "/World/GripperTestBox", half_height=TEST_BOX_HALF_HEIGHT,
-    horizontal_tolerance=_TEST_TARGET_TOLERANCE_M, vertical_tolerance=_TEST_TARGET_TOLERANCE_M,
-)
-print(f"[그리퍼] 테스트 박스를 팁 위치({_tip_world}) 바로 아래에 배치, target 등록 완료", flush=True)
+print("[그리퍼] 준비 완료 - 목표는 /gripper/set_target(world PoseStamped)으로만 설정된다 "
+      "(더 이상 부트스트랩 시 고정 테스트 박스를 쓰지 않음)", flush=True)
 
 
 # ---------------- M0609 팔 (RMPflow) ----------------
@@ -742,6 +743,39 @@ def _gripper_tip_world_pose():
     return position, quat_wxyz
 
 
+def _find_nearest_box_prim(target_world_pos: np.ndarray):
+    """cart_scene.box_objects(카트 씬 부트스트랩이 이미 알고 있는 실제 박스
+    prim들)에서 target_world_pos(world top-center)에 가장 가까운 박스의
+    top-center를 찾는다. XY/Z 오차를 각각 TARGET_SEARCH_*_TOLERANCE_M 이내로
+    따로 확인한다(사용자 지시 - 구형 거리 하나로 합치면 DynamicSuctionGripper가
+    이미 겪은 것과 같은 문제, 수평 오차가 수직 여유를 잡아먹는 문제가 재발한다).
+    매칭 실패 시 (None, None) 반환.
+
+    반환값의 half_height는 cart_scene.box_known_size(스폰 시점 크기 - 실측
+    수축/변형 없다고 가정)에서 가져온다 - Box3D 메시지의 size는 이 함수에서
+    쓰지 않는다(cart2trunk_motion이 top-center를 이미 계산해 보내주므로, 이
+    노드는 "어떤 실제 박스인지" 식별에만 크기를 쓴다)."""
+    best_path, best_score = None, None
+    for prim_path, box in cart_scene.box_objects.items():
+        pos, _quat = box.get_world_pose()
+        half_height = float(cart_scene.box_known_size[prim_path][2]) / 2.0
+        top_center = np.array(
+            [pos[0], pos[1], pos[2] + half_height], dtype=float)
+        xy_err = float(np.hypot(
+            target_world_pos[0] - top_center[0], target_world_pos[1] - top_center[1]))
+        z_err = float(abs(target_world_pos[2] - top_center[2]))
+        xy_ok = xy_err <= TARGET_SEARCH_HORIZONTAL_TOLERANCE_M
+        z_ok = z_err <= TARGET_SEARCH_VERTICAL_TOLERANCE_M
+        if not (xy_ok and z_ok):
+            continue
+        score = xy_err + z_err
+        if best_score is None or score < best_score:
+            best_score, best_path, best_half_height = score, prim_path, half_height
+    if best_path is None:
+        return None, None
+    return best_path, best_half_height
+
+
 # 시작 시점의 실제 link_6 자세를 초기 목표로 잡는다 - 그래야 노드가 뜨자마자 임의
 # 위치로 팔이 튀지 않고, 실제 /m0609/move_to_pose 명령이 올 때까지 제자리를 유지한다.
 _initial_ee_pos, _initial_ee_quat_wxyz = _ee_world_pose()
@@ -771,6 +805,17 @@ class PlatformControllerNode(Node):
         self.create_service(Trigger, "/gripper/activate", self._on_gripper_activate)
         self.create_service(Trigger, "/gripper/release", self._on_gripper_release)
         self._gripper_state_pub = self.create_publisher(Bool, "/gripper/state", 10)
+
+        # /gripper/set_target: world PoseStamped(박스 top-center) - cart2trunk_motion이
+        # anchor로 이미 world 좌표를 계산해 보낸다. cart2trunk_interfaces 커스텀
+        # 메시지는 이 노드(Isaac 번들 python3.11)에서 못 쓰므로(다른 인터페이스와
+        # 동일 이유) box_id/prim_path 없이 pose만 받고, 실제로 어떤 박스 prim인지는
+        # 이 노드가 스스로(cart_scene.box_objects 기준 최근접 탐색) 알아낸다 -
+        # 자세한 설계 근거는 _find_nearest_box_prim()/_on_gripper_set_target() 참고.
+        self._gripper_target_prim_path = None
+        self._gripper_target_received_time = None
+        self.create_subscription(
+            PoseStamped, "/gripper/set_target", self._on_gripper_set_target, 10)
 
         self._m0609_target_pos = _initial_ee_pos
         self._m0609_target_quat_wxyz = _initial_ee_quat_wxyz
@@ -836,9 +881,54 @@ class PlatformControllerNode(Node):
         msg.pose.orientation.w = float(w)
         self._base_state_pub.publish(msg)
 
+    def _on_gripper_set_target(self, msg: PoseStamped) -> None:
+        if msg.header.frame_id != "world":
+            self.get_logger().warn(
+                f"/gripper/set_target frame_id='{msg.header.frame_id}' - world만 지원, 무시"
+            )
+            return
+        p = msg.pose.position
+        target_world = np.array([p.x, p.y, p.z], dtype=float)
+        prim_path, _half_height = _find_nearest_box_prim(target_world)
+        if prim_path is None:
+            self._gripper_target_prim_path = None
+            self._gripper_target_received_time = None
+            self.get_logger().warn(
+                f"/gripper/set_target={np.round(target_world, 3)} 근처"
+                f"(허용 {TARGET_SEARCH_HORIZONTAL_TOLERANCE_M:.2f}/"
+                f"{TARGET_SEARCH_VERTICAL_TOLERANCE_M:.2f}m)에 실제 박스가 없음 - 목표 무효화"
+            )
+            return
+        self._gripper_target_prim_path = prim_path
+        self._gripper_target_received_time = time.monotonic()
+        self.get_logger().info(
+            f"/gripper/set_target -> {prim_path} (world={np.round(target_world, 3)})")
+
     def _on_gripper_activate(self, request, response):
-        gripper.close()
-        response.success = gripper.is_closed()
+        # "이전 target이 재사용되지 않도록" - 성공/실패 무관하게 이번 시도에서 소비한다
+        # (사용자 지시). activate가 set_target 콜백보다 먼저 도착하는 프로세스 간
+        # 순서 경쟁에 대비해, cart2trunk_motion 쪽에서 set_target 발행 후 짧게(0.1~0.2초)
+        # 대기하고 activate를 부르기로 했다 - 이 노드 쪽은 그 대기가 실패해도 안전하도록
+        # target_received_time으로 신선도(GRIPPER_TARGET_TIMEOUT_SEC)까지 방어한다.
+        prim_path = self._gripper_target_prim_path
+        received_time = self._gripper_target_received_time
+        self._gripper_target_prim_path = None
+        self._gripper_target_received_time = None
+
+        if prim_path is None:
+            response.success = False
+            response.message = "흡착 실패: /gripper/set_target으로 유효한 목표가 설정되지 않음"
+            return response
+        age_sec = time.monotonic() - received_time
+        if age_sec > GRIPPER_TARGET_TIMEOUT_SEC:
+            response.success = False
+            response.message = f"흡착 실패: 목표가 오래됨({age_sec:.2f}s > {GRIPPER_TARGET_TIMEOUT_SEC}s)"
+            return response
+
+        half_height = float(cart_scene.box_known_size[prim_path][2]) / 2.0
+        response.success = gripper.close_on_prim(
+            prim_path, half_height, GRASP_HORIZONTAL_MARGIN, GRASP_VERTICAL_TOLERANCE,
+        )
         response.message = "흡착 성공" if response.success else "흡착 실패(대상 기하 조건 밖 - 접근 자세를 확인하세요)"
         return response
 

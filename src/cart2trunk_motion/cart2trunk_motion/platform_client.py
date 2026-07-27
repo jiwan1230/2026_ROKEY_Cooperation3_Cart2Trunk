@@ -63,6 +63,8 @@ class PlatformClient:
             Trigger, '/gripper/release', callback_group=callback_group)
         node.create_subscription(
             Bool, '/gripper/state', self._on_gripper_state, 10, callback_group=callback_group)
+        self._gripper_set_target_pub = node.create_publisher(
+            PoseStamped, '/gripper/set_target', 10)
 
         self._m0609_move_pub = node.create_publisher(PoseStamped, '/m0609/move_to_pose', 10)
         node.create_subscription(
@@ -195,6 +197,23 @@ class PlatformClient:
         if result is None:
             return False, f'{client.srv_name} 응답 시간 초과({timeout_sec}s)'
         return result.success, result.message
+
+    def set_gripper_target(self, position_xyz) -> None:
+        """/gripper/set_target(world PoseStamped) 발행 - platform_controller_node가
+        이 world pose(박스 top-center)에 가장 가까운 실제 박스 prim을 찾아 다음
+        gripper_activate() 호출의 흡착 대상으로 삼는다(플랫폼 쪽 상세 설계는
+        platform_controller_node.py의 _find_nearest_box_prim() 참고 - 이 노드는
+        Isaac Sim 시뮬레이션의 prim/USD 개념을 전혀 몰라도 된다). 방향은 대상
+        식별에 쓰이지 않으므로 identity로 둔다."""
+        msg = PoseStamped()
+        msg.header.frame_id = 'world'
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        px, py, pz = (float(v) for v in position_xyz)
+        msg.pose.position.x = px
+        msg.pose.position.y = py
+        msg.pose.position.z = pz
+        msg.pose.orientation.w = 1.0
+        self._gripper_set_target_pub.publish(msg)
 
     def gripper_activate(self, timeout_sec: float = 5.0):
         return self._call_trigger(self._gripper_activate_client, timeout_sec)

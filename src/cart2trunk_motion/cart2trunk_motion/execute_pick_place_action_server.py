@@ -50,6 +50,7 @@ m0609_base/trunk_frame 기준이다(HANDOFF_MSI2.md 6.2절). 이 두 프레임�
    시퀀스만 구현한다.
 """
 import math
+import time
 
 import rclpy
 from rclpy.action import ActionServer
@@ -94,6 +95,12 @@ class ExecutePickPlaceActionServer(Node):
         self.declare_parameter('drive_tolerance_xy_m', 0.08)
         self.declare_parameter('drive_tolerance_yaw_deg', 8.0)
         self.declare_parameter('drive_max_seconds', 120.0)
+        # /gripper/set_target(토픽) 발행 후 /gripper/activate(서비스) 호출 전 대기 시간 -
+        # 두 통신이 별도 경로라 순서가 보장되지 않는다(platform_controller_node.py의
+        # _on_gripper_activate() docstring 참고, 사용자 지시로 도입). platform 쪽도
+        # target freshness(GRIPPER_TARGET_TIMEOUT_SEC)로 한 번 더 방어하지만, 이 대기
+        # 자체가 없으면 대부분의 경우 activate가 target보다 먼저 처리돼 매번 실패한다.
+        self.declare_parameter('gripper_target_settle_sec', 0.15)
 
         self._platform = PlatformClient(self, cb_group)
         self._execution_count = 0
@@ -214,6 +221,13 @@ class ExecutePickPlaceActionServer(Node):
             self._run_move(goal_handle, 'DESCEND_PICK', 0.20, pick_top, pick_quat, pick_tol)
 
             self._feedback(goal_handle, 'GRIP', 0.30)
+            # pick_top이 이미 이 goal의 anchor로 base-frame detected_pose를 world로
+            # 바꾼 값이라(위 pick_center_world 계산 참고), platform_controller_node.py는
+            # 이 world pose만으로(어떤 box_id/USD prim인지 몰라도) 실제 대상을 스스로
+            # 찾는다 - 상세 설계는 platform_controller_node.py의 _find_nearest_box_prim()/
+            # _on_gripper_set_target() 참고(사용자 지시로 설계/구현).
+            self._platform.set_gripper_target(pick_top)
+            time.sleep(float(self.get_parameter('gripper_target_settle_sec').value))
             success, message = self._platform.gripper_activate()
             if not success:
                 raise PickPlaceAborted(error_codes.GRASP_FAILED, f'흡착 실패: {message}')
