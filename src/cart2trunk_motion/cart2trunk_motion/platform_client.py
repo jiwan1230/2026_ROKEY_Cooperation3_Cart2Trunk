@@ -16,7 +16,7 @@ MultiThreadedExecutor(HANDOFF_MSI2.md 6.5절)로 돌리고, 제어 루프는 그
 """
 import threading
 
-from geometry_msgs.msg import Pose, PoseStamped, Twist
+from geometry_msgs.msg import Point, Pose, PoseStamped, Twist
 from rclpy.node import Node
 from std_msgs.msg import Bool, Float32
 from std_srvs.srv import Trigger
@@ -47,10 +47,22 @@ class PlatformClient:
         self._gripper_closed = None
         self._m0609_pose = None  # (pos_xyz, quat_xyzw)
         self._tip_pose = None  # (pos_xyz, quat_xyzw)
+        self._cart_clear_x = None
+        self._cart_center_xy = None
+        self._cart_standoff_dist = None
 
         self._lift_move_pub = node.create_publisher(Float32, '/lift/move', 10)
         node.create_subscription(
             Float32, '/lift/state', self._on_lift_state, 10, callback_group=callback_group)
+        node.create_subscription(
+            Float32, '/environment/cart_clear_x', self._on_cart_clear_x, 10,
+            callback_group=callback_group)
+        node.create_subscription(
+            Point, '/environment/cart_center_xy', self._on_cart_center_xy, 10,
+            callback_group=callback_group)
+        node.create_subscription(
+            Float32, '/environment/cart_standoff_dist', self._on_cart_standoff_dist, 10,
+            callback_group=callback_group)
 
         self._cmd_vel_pub = node.create_publisher(Twist, '/mobile_base/cmd_vel', 10)
         node.create_subscription(
@@ -61,6 +73,13 @@ class PlatformClient:
             Trigger, '/gripper/activate', callback_group=callback_group)
         self._gripper_release_client = node.create_client(
             Trigger, '/gripper/release', callback_group=callback_group)
+        self._enter_transport_pose_client = node.create_client(
+            Trigger, '/m0609/enter_transport_pose', callback_group=callback_group)
+        self._exit_transport_pose_client = node.create_client(
+            Trigger, '/m0609/exit_transport_pose', callback_group=callback_group)
+        self._pick_aim_target_pub = node.create_publisher(PoseStamped, '/m0609/pick_aim_target', 10)
+        self._pick_raise_and_aim_client = node.create_client(
+            Trigger, '/m0609/pick_raise_and_aim', callback_group=callback_group)
         node.create_subscription(
             Bool, '/gripper/state', self._on_gripper_state, 10, callback_group=callback_group)
         self._gripper_set_target_pub = node.create_publisher(
@@ -79,6 +98,18 @@ class PlatformClient:
     def _on_lift_state(self, msg: Float32) -> None:
         with self._lock:
             self._lift_h = msg.data
+
+    def _on_cart_clear_x(self, msg: Float32) -> None:
+        with self._lock:
+            self._cart_clear_x = msg.data
+
+    def _on_cart_center_xy(self, msg: Point) -> None:
+        with self._lock:
+            self._cart_center_xy = (msg.x, msg.y)
+
+    def _on_cart_standoff_dist(self, msg: Float32) -> None:
+        with self._lock:
+            self._cart_standoff_dist = msg.data
 
     def _on_base_state(self, msg: PoseStamped) -> None:
         with self._lock:
@@ -104,6 +135,27 @@ class PlatformClient:
     def lift_height(self):
         with self._lock:
             return self._lift_h
+
+    @property
+    def cart_clear_x(self):
+        """카트와 world X축만으로 분리되는(어떤 yaw든 안전한) 회전 안전지대 X -
+        platform_controller_node.py의 CART_CLEAR_X를 그대로 받아온다."""
+        with self._lock:
+            return self._cart_clear_x
+
+    @property
+    def cart_center_xy(self):
+        with self._lock:
+            return self._cart_center_xy
+
+    @property
+    def cart_standoff_dist(self):
+        """카트 중심에서 옆(Y)으로 이 거리만큼 떨어져야 안전 - 100.py CART_STANDOFF_DIST와
+        동일(CART_BASE_LEFT_XY/RIGHT_XY 계산에 쓰던 값). "박스로부터의 거리"가 아니다 -
+        카트 standoff는 항상 카트 중심 기준 고정 지점이고, 박스별 세부 위치는 팔의
+        joint_1 조준(PlatformClient.pick_raise_and_aim)이 담당한다."""
+        with self._lock:
+            return self._cart_standoff_dist
 
     @property
     def base_pose(self):
@@ -142,7 +194,8 @@ class PlatformClient:
             with self._lock:
                 required = (
                     self._lift_h, self._base_pose, self._gripper_closed,
-                    self._m0609_pose, self._tip_pose,
+                    self._m0609_pose, self._tip_pose, self._cart_clear_x,
+                    self._cart_center_xy, self._cart_standoff_dist,
                 )
                 if None not in required:
                     return True
@@ -220,3 +273,30 @@ class PlatformClient:
 
     def gripper_release(self, timeout_sec: float = 5.0):
         return self._call_trigger(self._gripper_release_client, timeout_sec)
+
+    def enter_transport_pose(self, timeout_sec: float = 25.0):
+        """100.py STAGE0.5(안전 접힘 + 리프트 하강)를 트리거한다 - 실제 관절
+        보간(200+250스텝)이 platform_controller_node 안에서 블로킹으로 도는 동안
+        이 호출도 그만큼 블로킹된다(기본 타임아웃을 넉넉히 잡음)."""
+        return self._call_trigger(self._enter_transport_pose_client, timeout_sec)
+
+    def exit_transport_pose(self, timeout_sec: float = 25.0):
+        """100.py가 STAGE1 진입 전에 부르던 리프트 재상승(접힘 자세 유지)을 트리거한다."""
+        return self._call_trigger(self._exit_transport_pose_client, timeout_sec)
+
+    def set_pick_aim_target(self, position_xy) -> None:
+        """100.py pick_raise_and_aim()의 joint_1 조준 대상(world XY) - set_gripper_target과
+        같은 이유로 z는 무시한다(방위각 계산은 XY 방향만 씀)."""
+        msg = PoseStamped()
+        msg.header.frame_id = 'world'
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        px, py = (float(v) for v in position_xy)
+        msg.pose.position.x = px
+        msg.pose.position.y = py
+        msg.pose.orientation.w = 1.0
+        self._pick_aim_target_pub.publish(msg)
+
+    def pick_raise_and_aim(self, timeout_sec: float = 25.0):
+        """100.py pick_raise_and_aim()을 트리거한다 - set_pick_aim_target()을 먼저
+        호출해야 한다(gripper_activate와 동일한 target-then-trigger 패턴)."""
+        return self._call_trigger(self._pick_raise_and_aim_client, timeout_sec)

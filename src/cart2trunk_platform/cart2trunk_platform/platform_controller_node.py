@@ -191,7 +191,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool, Float32
 from std_srvs.srv import Trigger
-from geometry_msgs.msg import Twist, PoseStamped
+from geometry_msgs.msg import Point, Twist, PoseStamped
 from sensor_msgs.msg import Image, CameraInfo
 
 # ============================================================
@@ -235,6 +235,13 @@ CART_STANDOFF_MARGIN = 0.10  # 100.py의 CART_STANDOFF_MARGIN과 동일값.
 MEASURED_CHASSIS_TOP_OFFSET = 0.0180
 LIFT_MIN = MEASURED_CHASSIS_TOP_OFFSET + M0609_MOUNT_Z_ABOVE_CHASSIS_TOP
 LIFT_MAX = LIFT_MIN + 0.35  # 100.py와 동일값 - 트렁크 STAGE 3.x가 이 이름을 직접 참조하므로 절대 바꾸지 않는다.
+# 100.py 1152행과 동일값(LIFT_TRAVEL_M=0.75, 91.cart_pick_holonomic.py에서 실측 튜닝) -
+# LIFT_MAX(0.35 travel, 트렁크 STAGE 3.x 전용)와는 별개의 상수다. 100.py 1140-1150행
+# 주석 - 한때 이 둘을 같은 이름(LIFT_MAX)으로 썼다가, 트렁크 STAGE 3.2.0이
+# "LIFT_MAX+0.2"를 계산할 때 0.988까지 올라가버려 팔 도달범위를 넘어서는 실측
+# 버그(err=0.056m로 중단)가 났다 - 그래서 카트 PICK 전용 리프트 높이는 반드시
+# 별도 이름으로 분리해야 한다.
+PICK_LIFT_H = LIFT_MIN + 0.75
 
 # ---------------- cart2trunk_simulation - 카트/차량(트렁크) 씬 ----------------
 # 100.py의 CART_USD/CAR_USD와 동일한 usdz 에셋(git에 커밋 안 함 - M0609 자산과
@@ -302,6 +309,31 @@ else:
 # 으로 표현한다.
 LIFT_MAX_STEP_M = 0.008
 
+# 100.py raise_lift_and_fold(...)의 두 표준 호출과 동일 스텝수 - STAGE0.5(안전 운송
+# 자세 진입: 접기 200스텝 + 리프트하강 250스텝)와 STAGE1 진입 전(리프트만 재상승
+# 250스텝) 그대로. /m0609/enter_transport_pose, /m0609/exit_transport_pose가 이 값을 쓴다.
+TRANSPORT_FOLD_STEPS = 200
+TRANSPORT_LIFT_STEPS = 250
+
+# [사용자 지적 - 실제 구현 버그, 최우선 수정] main()의 메인 루프는 매 스텝 무조건
+# (이전 버전의) apply_m0609_target()을 불러 RMPflow로 self._m0609_target_pos(world
+# 고정 좌표)를 추종시켰다. enter/exit_transport_pose·pick_raise_and_aim처럼 관절
+# 공간으로 직접 팔을 움직인 뒤 이 세계좌표 목표를 "지금 EE 위치"로 재동기화해도(_sync_m0609_target_
+# to_current, 이전 수정) 문제가 전부 해결되지 않는다 - 그 다음 섀시가 실제로
+# 주행하면(APPROACH_CART/TRANSPORT), EE는 섀시에 얹혀 같이 움직이는데 RMPflow
+# 목표는 world 고정값 그대로라, RMPflow가 "섀시가 움직여서 EE가 목표에서
+# 멀어졌다"고 판단해 관절을 반대로 움직여 world 위치를 유지하려 든다(섀시는
+# 트렁크로 가는데 팔은 원래 자리에 남으려고 뒤로 뻗는 현상 - 사용자가 GUI로
+# 직접 확인). 100.py는 이 문제 자체가 없다 - 주행 중엔 RMPflow를 아예 안 부르고
+# _hold_cartgo_arm()/_hold_transit_arm()으로 매 스텝 관절값을 직접 고정하기
+# 때문이다. 그래서 이 프로세스도 팔 제어 모드를 명시적으로 분리한다 - JOINT_HOLD
+# (주행/접기/리프트 이동/조준 직후 - RMPflow 대신 고정 관절값을 매 스텝 재적용)와
+# CARTESIAN(실제 /m0609/move_to_pose 명령이 들어온 뒤 - RMPflow가 그 world 목표를
+# 추종). 모드 전환 지점: enter/exit_transport_pose·pick_raise_and_aim 완료 시
+# JOINT_HOLD로, /m0609/move_to_pose 수신 시 CARTESIAN으로.
+ARM_MODE_JOINT_HOLD = "joint_hold"
+ARM_MODE_CARTESIAN = "cartesian"
+
 
 def mecanum_wheel_speeds(vx, vy, wz, wheel_radius, k):
     """100.cart_to_trunk_dual_side_holonomic.py와 동일 - 로봇 로컬 프레임 속도(vx,vy,wz)를
@@ -331,6 +363,25 @@ def quat_between(v_from, v_to):
     q = np.array([w, axis[0], axis[1], axis[2]])
     q = q / np.linalg.norm(q)
     return Gf.Quatf(float(q[0]), float(q[1]), float(q[2]), float(q[3]))
+
+
+def quat_wxyz_to_matrix(q) -> np.ndarray:
+    """Isaac 관례(w,x,y,z) 쿼터니언 -> 3x3 회전행렬. capture_cart_scan.py/
+    trunk_map_builder.py와 동일 공식 - _on_pick_raise_and_aim()의 FK 기반 joint_1
+    조준 계산(100.py pick_raise_and_aim()과 동일 원리)에 쓴다."""
+    w, x, y, z = q
+    n = w * w + x * x + y * y + z * z
+    if n < 1e-12:
+        return np.eye(3)
+    s = 2.0 / n
+    wx, wy, wz = s * w * x, s * w * y, s * w * z
+    xx, xy, xz = s * x * x, s * x * y, s * x * z
+    yy, yz, zz = s * y * y, s * y * z, s * z * z
+    return np.array([
+        [1 - (yy + zz), xy - wz, xz + wy],
+        [xy + wz, 1 - (xx + zz), yz - wx],
+        [xz - wy, yz + wx, 1 - (xx + yy)],
+    ])
 
 
 def build_mecanum_wheel(stage, wheel_root_path, chassis_path, local_pos, wheel_material_path, chirality, name):
@@ -617,6 +668,16 @@ CART_CLEAR_X = (_cart_center_xy[0] + cart_scene.cart_half_x
                 + CART_STANDOFF_MARGIN)
 CHASSIS_SPAWN_XY = (CART_CLEAR_X, _cart_center_xy[1])
 
+# 100.py CART_STANDOFF_DIST(1090행)와 동일 공식 - 카트 "옆"(Y) standoff까지의 거리.
+# 중요: 100.py의 실제 카트 PICK standoff는 "박스로부터 얼마나 떨어지느냐"가 아니라
+# "카트 중심으로부터 이 고정 거리만큼 옆으로 떨어진 고정 지점"이다(CART_BASE_LEFT_XY/
+# RIGHT_XY, cart_center_xy[0]에서 X는 전혀 안 바뀜) - 카트 길이 방향(X)으로 실제
+# 박스 위치까지 다가가는 건 섀시가 아니라 팔(joint_1 조준 + RMPflow 리치)의 몫이다.
+# cart2trunk_motion 쪽이 예전에 "박스로부터 거리 0.6m" 식으로 근사했다가, 박스가
+# 카트 안쪽 깊숙히 있을 때(카트 가장자리에서 겨우 0.1m 밖) 그 standoff가 카트 몸체와
+# 겹쳐 마지막 접근 구간에서 정체(멈춤)가 났다(사용자가 실측으로 확인).
+CART_STANDOFF_DIST = CHASSIS_HALF_WIDTH_EFFECTIVE + cart_scene.cart_half_y + CART_STANDOFF_MARGIN
+
 chassis_path, hub_joint_paths, k_factor = build_holonomic_base(
     stage, CHASSIS_SPAWN_XY, BASE_LENGTH, BASE_WIDTH, BASE_HEIGHT)
 
@@ -801,10 +862,6 @@ def _find_nearest_box_prim(target_world_pos: np.ndarray):
     return best_path, best_half_height
 
 
-# 시작 시점의 실제 link_6 자세를 초기 목표로 잡는다 - 그래야 노드가 뜨자마자 임의
-# 위치로 팔이 튀지 않고, 실제 /m0609/move_to_pose 명령이 올 때까지 제자리를 유지한다.
-_initial_ee_pos, _initial_ee_quat_wxyz = _ee_world_pose()
-
 # ============================================================
 # ROS 2 인터페이스 (표준 메시지만)
 # ============================================================
@@ -819,9 +876,35 @@ class PlatformControllerNode(Node):
 
     def __init__(self):
         super().__init__("platform_controller_node")
-        self._target_h = LIFT_MIN
+        # LIFT_MIN 고정값이 아니라 "지금 실제 리프트 높이"로 시작해야 한다 - 보통은
+        # lift_state["h"]가 이미 LIFT_MIN(스폰 직후)이라 차이가 없지만,
+        # capture_cart_scan.py의 CART2TRUNK_CAPTURE_THEN_SERVE=1처럼 스캔이 리프트를
+        # LIFT_MAX까지 올려둔 채로 이 노드를 이어서 띄우는 경우, LIFT_MIN 고정값을
+        # 쓰면 노드가 뜨자마자(아무 /lift/move 명령 없이) 리프트가 LIFT_MIN까지
+        # 저절로 하강한다 - 그 동안 팔은 스캔 마지막 자세(카트 옆)에 그대로 있어
+        # 카트와 부딪힌다(사용자가 GUI로 직접 확인). "명령이 올 때까지 지금 자리를
+        # 유지한다"가 원래 의도였으므로 지금 값을 그대로 목표로 잡는다.
+        self._target_h = lift_state["h"]
         self.create_subscription(Float32, "/lift/move", self._on_lift_move, 10)
         self._lift_state_pub = self.create_publisher(Float32, "/lift/state", 10)
+
+        # CART_CLEAR_X("회전 안전지대" - 카트와 X축만으로 분리되는 world X, 615행
+        # 부근 참고) 그대로 노출한다 - cart2trunk_motion은 카트 형상(cart_scene)을
+        # 전혀 모르므로, execute_pick_place_action_server.py의 카트 접근 주행이
+        # 100.py/capture_cart_scan.py와 같은 "X 안전지대 경유 3단계" 접근을 하려면
+        # 이 값을 받아야 한다(사용자 지시 - 100.py 방식 그대로 포팅. 이전에는 이
+        # 값이 없어 일반적인 직선 접근만 가능했고, 사용자가 GUI 실측으로 카트
+        # 충돌을 확인했다).
+        self._cart_clear_x_pub = self.create_publisher(Float32, "/environment/cart_clear_x", 10)
+        # CART_STANDOFF_DIST/cart_center_xy(위 641행 부근 참고)도 노출한다 - 100.py의
+        # 실제 카트 PICK standoff(CART_BASE_LEFT_XY/RIGHT_XY)는 "박스로부터 거리"가
+        # 아니라 "카트 중심에서 이 고정 거리만큼 옆으로 떨어진 고정 지점"이다.
+        # cart2trunk_motion이 예전에 쓰던 "박스로부터 거리 0.6m" 근사가 박스가 카트
+        # 안쪽 깊이 있을 때 정체(카트에 물리적으로 막힘)를 냈다(사용자 실측) - 이제
+        # 진짜 standoff 지점을 여기서 계산해 넘긴다.
+        self._cart_center_pub = self.create_publisher(Point, "/environment/cart_center_xy", 10)
+        self._cart_standoff_dist_pub = self.create_publisher(
+            Float32, "/environment/cart_standoff_dist", 10)
 
         self._cmd_vel = (0.0, 0.0, 0.0)
         self.create_subscription(Twist, "/mobile_base/cmd_vel", self._on_cmd_vel, 10)
@@ -829,6 +912,32 @@ class PlatformControllerNode(Node):
 
         self.create_service(Trigger, "/gripper/activate", self._on_gripper_activate)
         self.create_service(Trigger, "/gripper/release", self._on_gripper_release)
+
+        # 100.py STAGE0.5/STAGE1 진입부(raise_lift_and_fold 2연속 호출)를 그대로
+        # 이식한 서비스 - 박스를 든 채로 주행하기 전에 팔을 안전 접힘 자세로 접고
+        # 리프트를 낮추는(그 반대로 다시 올리는) 절차를 cart2trunk_motion이 트리거만
+        # 하고, LIFT_MIN/MAX 등 실측 상수와 실제 관절 보간은 여기(플랫폼 프로세스)
+        # 안에 그대로 둔다 - 모듈 docstring에서 이미 "그 상수들은 이 프로세스에만
+        # 있다"고 명시한 원칙 그대로(사용자 지시 - 통신 구조만 새로 만들고 이동/자세
+        # 로직은 100.py를 그대로 따를 것).
+        self.create_service(
+            Trigger, "/m0609/enter_transport_pose", self._on_enter_transport_pose)
+        self.create_service(
+            Trigger, "/m0609/exit_transport_pose", self._on_exit_transport_pose)
+
+        # 100.py pick_raise_and_aim()(91.cart_pick_holonomic.py 이식, 1598행)을 그대로
+        # 트리거하는 서비스 - /gripper/set_target+/gripper/activate와 동일한 설계
+        # 원칙(토픽으로 목표만 먼저 보내고, 서비스로 실제 실행을 트리거) - 카트/박스의
+        # 정확한 world 좌표는 cart2trunk_motion이 이미 알고 있으므로(box_scan_action_
+        # server.py가 world 좌표로 변환해서 줌) 그 좌표를 여기로 넘겨 FK 기반 joint_1
+        # 조준 계산(cart center 대신 실제 박스 위치를 조준 - 100.py의 "카트 중심 조준"
+        # 보다 오히려 더 정확한 목표)에 쓴다.
+        self._pick_aim_target_xy = None
+        self.create_subscription(
+            PoseStamped, "/m0609/pick_aim_target", self._on_pick_aim_target, 10)
+        self.create_service(
+            Trigger, "/m0609/pick_raise_and_aim", self._on_pick_raise_and_aim)
+
         self._gripper_state_pub = self.create_publisher(Bool, "/gripper/state", 10)
 
         # /gripper/set_target: world PoseStamped(박스 top-center) - cart2trunk_motion이
@@ -842,8 +951,24 @@ class PlatformControllerNode(Node):
         self.create_subscription(
             PoseStamped, "/gripper/set_target", self._on_gripper_set_target, 10)
 
-        self._m0609_target_pos = _initial_ee_pos
-        self._m0609_target_quat_wxyz = _initial_ee_quat_wxyz
+        # 시작 시점의 실제 link_6 자세를 초기 목표로 잡는다 - 그래야 노드가 뜨자마자
+        # 임의 위치로 팔이 튀지 않고, 실제 /m0609/move_to_pose 명령이 올 때까지
+        # 제자리를 유지한다. 반드시 __init__ 시점(지금)에 재야 한다 - 모듈 import
+        # 시점에 한 번만 측정해서 재사용하면(예전 버전의 버그), CART2TRUNK_CAPTURE_
+        # THEN_SERVE=1처럼 import 이후 스캔이 팔을 한참 움직이고 나서야 이 노드가
+        # 뜨는 경우 그 값은 이미 스캔 마지막 자세와 전혀 다른 "옛날" 목표가 된다 -
+        # 그대로 쓰면 노드가 뜨자마자 RMPflow가 "지금 위치(카트 옆)"에서 "그 옛
+        # 목표"로 팔을 확 잡아당겨 카트와 부딪힌다(위 _target_h와 동일한 종류의
+        # 버그, 사용자가 GUI로 직접 확인).
+        _current_ee_pos, _current_ee_quat_wxyz = _ee_world_pose()
+        self._m0609_target_pos = _current_ee_pos
+        self._m0609_target_quat_wxyz = _current_ee_quat_wxyz
+        # 위 ARM_MODE 설명대로 - 노드가 뜨는 시점엔 아직 아무 /m0609/move_to_pose도
+        # 안 왔으므로 JOINT_HOLD로 시작한다(지금 실제 관절값을 그대로 고정 목표로
+        # 잡아서, 방금 fold_to_known_pose() 등으로 접어둔 자세가 그대로 유지된다 -
+        # RMPflow 목표가 아니라).
+        self._arm_control_mode = ARM_MODE_JOINT_HOLD
+        self._joint_hold_target = np.array(m0609_robot.get_joint_positions(), dtype=float)
         self.create_subscription(PoseStamped, "/m0609/move_to_pose", self._on_m0609_move_to_pose, 10)
         self._m0609_state_pub = self.create_publisher(PoseStamped, "/m0609/state", 10)
         self._gripper_tip_pose_pub = self.create_publisher(PoseStamped, "/gripper/tip_pose", 10)
@@ -880,6 +1005,20 @@ class PlatformControllerNode(Node):
         msg = Float32()
         msg.data = float(lift_state["h"])
         self._lift_state_pub.publish(msg)
+
+    def publish_cart_clear_x(self) -> None:
+        msg = Float32()
+        msg.data = float(CART_CLEAR_X)
+        self._cart_clear_x_pub.publish(msg)
+
+    def publish_cart_geometry(self) -> None:
+        center_msg = Point()
+        center_msg.x = float(_cart_center_xy[0])
+        center_msg.y = float(_cart_center_xy[1])
+        self._cart_center_pub.publish(center_msg)
+        dist_msg = Float32()
+        dist_msg.data = float(CART_STANDOFF_DIST)
+        self._cart_standoff_dist_pub.publish(dist_msg)
 
     def _on_cmd_vel(self, msg: Twist) -> None:
         vx = float(np.clip(msg.linear.x, -MOBILE_BASE_MAX_LINEAR_MPS, MOBILE_BASE_MAX_LINEAR_MPS))
@@ -963,6 +1102,122 @@ class PlatformControllerNode(Node):
         response.message = "흡착 해제"
         return response
 
+    def _interpolate_lift_and_joints(self, target_h: float, target_joints, steps: int) -> None:
+        """100.py raise_lift_and_fold()와 동일 - 리프트 높이와 관절을 함께 선형
+        보간한다(둘 중 하나는 target=지금 값으로 고정해서 호출하면 그쪽은 실질적으로
+        안 움직인다 - enter/exit_transport_pose가 이 방식으로 "접기만"/"리프트만"을
+        구현한다). main()의 메인 루프(rclpy.spin_once + world.step())와 별개로 이
+        서비스 콜백 안에서 직접 world.step()을 반복 호출한다 - main()이 이미
+        MultiThreadedExecutor가 아니라 단일 스레드 spin_once 폴링이라(모듈 docstring/
+        main() 참고) 서비스 콜백 안에서 여러 스텝을 도는 것도 같은 스레드에서 그대로
+        안전하게 동작한다(close_on_prim()과 달리 이 두 서비스는 즉시 반환하지 않고
+        200~250스텝만큼 블로킹된다 - cart2trunk_motion 쪽 Trigger 호출 타임아웃을
+        충분히 크게 잡아야 한다)."""
+        start_h = lift_state["h"]
+        start_joints = np.array(m0609_robot.get_joint_positions(), dtype=float)
+        target_joints = np.asarray(target_joints, dtype=float)
+        for i in range(steps):
+            alpha = (i + 1) / steps
+            h = start_h + (target_h - start_h) * alpha
+            j = start_joints + (target_joints - start_joints) * alpha
+            m0609_robot.apply_action(ArticulationAction(joint_positions=j))
+            set_lift_height(h)
+            lift_state["h"] = h
+            world.step(render=True)
+        self._set_joint_hold(target_joints)
+
+    def _set_joint_hold(self, joint_target) -> None:
+        """관절공간 이동 직후 JOINT_HOLD로 전환한다(위 315행 부근 ARM_MODE 설명) -
+        예전에는 여기서 RMPflow의 Cartesian 목표를 "지금 EE 위치"로 재동기화하는
+        것으로 고치려 했는데(_sync_m0609_target_to_current, 이전 버전), 그것만으론
+        부족했다 - 그 다음 섀시가 실제로 주행하면 EE가 섀시에 얹혀 같이 움직이는데
+        world 고정 목표는 그대로라, RMPflow가 다시 팔을 잡아당긴다(사용자가 GUI로
+        직접 확인). 아예 이 구간 동안 RMPflow(apply_arm_control의 CARTESIAN 분기)
+        자체를 안 타게 만들어야 한다 - JOINT_HOLD면 매 스텝 이 고정 관절값만
+        재적용한다(100.py의 _hold_cartgo_arm()/_hold_transit_arm()과 동일 원리)."""
+        self._joint_hold_target = np.asarray(joint_target, dtype=float).copy()
+        self._arm_control_mode = ARM_MODE_JOINT_HOLD
+
+    def _on_enter_transport_pose(self, request, response):
+        """100.py STAGE0.5(raise_lift_and_fold를 target_h/target_joints를 바꿔가며
+        연속 호출)와 동일 - 박스를 든 채로 주행(TRANSPORT)하기 전에 먼저 팔을 안전
+        접힘 자세(joint_3/5=90도, 스폰 초기 자세와 동일 - _init_joints)로 접고
+        (리프트는 그대로), 그 다음에야 리프트를 LIFT_MIN(도킹 높이)까지 내린다
+        (관절은 이미 접힌 채로 유지) - 순서를 바꾸면 안 된다(접히지 않은 채로
+        리프트만 먼저 내리면 팔이 카트/주변과 부딪힌다 - 사용자가 GUI 실측으로
+        확인한 문제)."""
+        self._interpolate_lift_and_joints(lift_state["h"], _init_joints, TRANSPORT_FOLD_STEPS)
+        self._interpolate_lift_and_joints(LIFT_MIN, _init_joints, TRANSPORT_LIFT_STEPS)
+        response.success = True
+        response.message = f"안전 운송 자세 진입 완료(리프트={lift_state['h']:.3f})"
+        return response
+
+    def _on_exit_transport_pose(self, request, response):
+        """100.py가 STAGE1(트렁크 접근) 진입 직전 raise_lift_and_fold(LIFT_MAX,
+        _pick_fold)를 부르던 것과 동일 - 팔은 접힌 채(관절 목표=지금 값이라 실질
+        무동작) 리프트만 다시 LIFT_MAX까지 올린다. 이후 /m0609/move_to_pose(Cartesian)
+        명령이 들어오면 RMPflow가 이 접힌 자세에서 목표로 자연스럽게 풀려나간다."""
+        self._interpolate_lift_and_joints(LIFT_MAX, _init_joints, TRANSPORT_LIFT_STEPS)
+        response.success = True
+        response.message = f"안전 운송 자세 해제 완료(리프트={lift_state['h']:.3f})"
+        return response
+
+    def _on_pick_aim_target(self, msg: PoseStamped) -> None:
+        self._pick_aim_target_xy = (msg.pose.position.x, msg.pose.position.y)
+
+    def _on_pick_raise_and_aim(self, request, response):
+        """100.py pick_raise_and_aim()(1598행)을 그대로 이식 - 1) 리프트를 PICK_LIFT_H
+        (도킹보다 훨씬 높음, 카트 손잡이 위 호버 전용)까지 올리며 동시에 팔을 안전
+        접힘 자세로 접는다(순수 관절/리프트 보간, RMPflow 관여 없음). 2) 그 다음
+        FK 실측 기반으로 "지금 접은 자세에서 그리퍼가 실제로 보는 방향"과 "지금
+        섀시 기준 조준 대상이 있는 방향"의 차이만큼만 joint_1(방위각)을 돌린다 -
+        100.py는 조준 대상이 카트 중심(cart_center_xy)이었지만, 여기서는
+        cart2trunk_motion이 이미 world 좌표로 아는 실제 박스 위치를 쓴다(카트
+        중심보다 더 정확한 목표). 이 두 단계 모두 순수 관절공간이라(RMPflow가
+        큰 목표를 한 번에 받아 이상한 해로 튀는 문제와 무관) 이후 Cartesian
+        move_to_pose 명령이 훨씬 작은(이미 근처로 조준된) 목표에서 시작하게 된다."""
+        if self._pick_aim_target_xy is None:
+            response.success = False
+            response.message = "조준 대상 없음 - /m0609/pick_aim_target으로 먼저 world XY를 보내세요"
+            return response
+
+        self._interpolate_lift_and_joints(PICK_LIFT_H, _init_joints, TRANSPORT_FOLD_STEPS)
+
+        chassis_pos_now, chassis_quat_now = base_robot.get_world_pose()
+        r_chassis_now = quat_wxyz_to_matrix(np.asarray(chassis_quat_now, dtype=float))
+        ee_folded_pos0, _ = m0609_robot.end_effector.get_world_pose()
+        delta_ee_local = r_chassis_now.T @ (
+            np.array(ee_folded_pos0, dtype=float) - np.array(chassis_pos_now, dtype=float))
+        ref_angle = float(np.arctan2(delta_ee_local[1], delta_ee_local[0]))
+
+        target_x, target_y = self._pick_aim_target_xy
+        delta_target_local = r_chassis_now.T @ np.array([
+            target_x - float(chassis_pos_now[0]),
+            target_y - float(chassis_pos_now[1]),
+            0.0,
+        ])
+        target_angle = float(np.arctan2(delta_target_local[1], delta_target_local[0]))
+        joint1_delta = ((target_angle - ref_angle + np.pi) % (2 * np.pi)) - np.pi
+
+        aim_current = np.array(m0609_robot.get_joint_positions(), dtype=float)
+        aim_target = aim_current.copy()
+        if "joint_1" in m0609_robot.dof_names:
+            aim_target[m0609_robot.dof_names.index("joint_1")] += joint1_delta
+        aim_steps = 150
+        for i in range(aim_steps):
+            alpha = (i + 1) / aim_steps
+            j = aim_current + (aim_target - aim_current) * alpha
+            m0609_robot.apply_action(ArticulationAction(joint_positions=j))
+            set_lift_height(lift_state["h"])
+            world.step(render=True)
+        self._set_joint_hold(aim_target)
+
+        response.success = True
+        response.message = (
+            f"PICK 리프트({PICK_LIFT_H:.3f})+조준 완료(joint_1 delta="
+            f"{float(np.degrees(joint1_delta)):.1f}deg)")
+        return response
+
     def publish_gripper_state(self) -> None:
         msg = Bool()
         msg.data = gripper.is_closed()
@@ -974,8 +1229,17 @@ class PlatformControllerNode(Node):
         self._m0609_target_pos = np.array([p.x, p.y, p.z], dtype=float)
         # ROS geometry_msgs 쿼터니언(x,y,z,w) -> Isaac Sim 관례(w,x,y,z).
         self._m0609_target_quat_wxyz = np.array([o.w, o.x, o.y, o.z], dtype=float)
+        # 실제 Cartesian 목표가 왔으니 이제부터 RMPflow가 이 목표를 추종한다 -
+        # ARM_MODE 설명 참고(위 315행 부근).
+        self._arm_control_mode = ARM_MODE_CARTESIAN
 
-    def apply_m0609_target(self) -> None:
+    def apply_arm_control(self) -> None:
+        """main()이 매 스텝 부른다 - 지금 모드에 따라 RMPflow(Cartesian) 또는
+        고정 관절값 재적용(JOINT_HOLD) 중 하나만 한다(둘 다 매 스텝 부르면 서로
+        싸운다 - 위 315행 부근 ARM_MODE 설명 참고)."""
+        if self._arm_control_mode == ARM_MODE_JOINT_HOLD:
+            m0609_robot.apply_action(ArticulationAction(joint_positions=self._joint_hold_target))
+            return
         sync_rmp_base()
         actions = controller.forward(
             target_end_effector_position=self._m0609_target_pos,
@@ -1044,7 +1308,7 @@ def main():
             rclpy.spin_once(node, timeout_sec=0.0)
             node.step_lift_toward_target()
             node.apply_cmd_vel()
-            node.apply_m0609_target()
+            node.apply_arm_control()
             world.step(render=True)
             i += 1
             if i % publish_every_n == 0:
@@ -1053,6 +1317,8 @@ def main():
                 node.publish_gripper_state()
                 node.publish_m0609_state()
                 node.publish_gripper_tip_pose()
+                node.publish_cart_clear_x()
+                node.publish_cart_geometry()
                 if depth_camera is not None:
                     node.publish_camera()
     finally:

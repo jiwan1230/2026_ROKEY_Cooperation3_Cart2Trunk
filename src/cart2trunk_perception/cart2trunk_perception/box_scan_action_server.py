@@ -17,7 +17,27 @@ scan_cache/merged_cart_scan.npy로 저장 -> run_scan_batch.py가 오프라인 �
 `fixture_input_path` 파라미터가 설정되면 그 파일(.npy 또는 .ply, m0609_base_link
 좌표계로 이미 합쳐진 point cloud)을 읽어 즉시 결과를 반환한다. 실시간 Depth+TF
 누적(PointCloudAccumulator 역할)은 MSI2 카메라 브리지가 준비되면 이어서 구현한다.
+
+[좌표계 - detected_pose를 world로 즉시 변환하는 이유]
+원래(구버전)는 detected_pose를 m0609_base_link 프레임 그대로 반환했다 - 이건
+"ScanBoxes 직후 곧바로 같은 위치에서 ExecutePickPlace를 부른다"는 가정에서만
+유효하다(스캔과 pick 사이에 섀시가 움직이면 좌표계가 어긋난다). 사용자 지시 -
+capture_cart_scan.py가 스캔 후 홀로노믹 베이스를 시작 위치로 복귀시킨 채 서버
+모드를 유지하고, 그 이후 들어오는 실제 요청이 "복귀된 베이스 위치" 기준으로
+정확히 동작해야 한다 - 즉 스캔과 pick 사이에 섀시가 실제로 움직이는 시나리오를
+정식으로 지원해야 한다. fixture_input_path 옆에 capture_cart_scan.py가 저장한
+"<stem>_anchor.json"(스캔 시점 m0609_base_link의 world pos/quat_wxyz)이 있으면
+그 anchor로 detected_pose/corners를 여기서 한 번에 world 좌표로 변환해서 반환한다
+- 이후 섀시가 어디로 움직이든(anchor json은 이 파일이 존재하는 한 계속 그
+스캔 시점 값을 가리키므로) detected_pose는 계속 유효하다. anchor json이 없으면
+(구버전 fixture 등) m0609_base_link 프레임 그대로 반환하고 header.frame_id를
+비워둔다 - execute_pick_place_action_server.py가 frame_id로 두 경우를 구분해서
+처리한다.
 """
+import json
+import os
+from pathlib import Path
+
 import numpy as np
 import rclpy
 from rclpy.action import ActionServer
@@ -32,19 +52,48 @@ from cart2trunk_common import error_codes
 from cart2trunk_common.geometry import quaternion_from_z_yaw
 
 from cart2trunk_perception.core import multiview_box_detector as mvd
+from cart2trunk_perception.core.trunk_map_builder import quat_wxyz_to_matrix
+
+WORLD_FRAME = "world"
 
 
-def box_dict_to_msg(box: dict) -> Box3D:
+def load_scan_anchor(fixture_input_path: str):
+    """capture_cart_scan.py가 merged_cart_scan.npy와 나란히 저장하는
+    "<stem>_anchor.json"(스캔 시점 m0609_base_link의 world pos/quat_wxyz)을 읽는다.
+    없으면(구버전 fixture 등) None - box_dict_to_msg()가 base_link 프레임 그대로
+    반환하는 구버전 동작으로 폴백한다."""
+    anchor_path = Path(fixture_input_path).with_name(Path(fixture_input_path).stem + "_anchor.json")
+    if not anchor_path.exists():
+        return None
+    payload = json.loads(anchor_path.read_text())
+    anchor_pos = np.asarray(payload["base_link_pos"], dtype=np.float64)
+    anchor_quat_wxyz = np.asarray(payload["base_link_quat_wxyz"], dtype=np.float64)
+    return anchor_pos, anchor_quat_wxyz
+
+
+def box_dict_to_msg(box: dict, anchor=None) -> Box3D:
     """multiview_box_detector.detect_boxes_in_base_frame()의 결과 dict 하나(corner_order:
     top_0..top_3, bottom_0..bottom_3, m0609_base_link 좌표계) -> Box3D.msg.
+
+    anchor=(anchor_pos, anchor_quat_wxyz)가 주어지면 corners를 다른 모든 계산(중심/
+    폭/깊이/yaw) 전에 먼저 world로 변환한다 - 그러면 아래 로직은 그대로 두고도
+    결과가 자동으로 world 좌표계가 된다(회전이 폭/깊이 같은 길이값에는 영향을 안
+    주므로 그 값들은 프레임 무관).
 
     detected_pose.position = 8꼭짓점의 기하 중심(코너 dict의 "top".center가 아니라
     실제 사각형 코너 평균 - fill_ratio가 낮은 치우친 클러스터일수록 top.center가
     사각형 중심과 어긋날 수 있으므로 multiview_scan._rect_center_xy()와 같은 원칙).
-    yaw = 검출된 사각형 자신의 변 방향(코너 0->1) 기준, base_link +X축 대비 각도 -
-    박스가 회전된 채 카트에 놓여도 정확히 반영된다.
+    yaw = 검출된 사각형 자신의 변 방향(코너 0->1) 기준, (anchor가 없으면 base_link
+    +X축, 있으면 world +X축) 대비 각도 - 박스가 회전된 채 카트에 놓여도 정확히 반영된다.
     """
     corners = np.asarray(box["corners"], dtype=np.float64)  # (8,3)
+    frame_id = mvd.OUTPUT_FRAME
+    if anchor is not None:
+        anchor_pos, anchor_quat_wxyz = anchor
+        r_anchor = quat_wxyz_to_matrix(anchor_quat_wxyz)
+        corners = corners @ r_anchor.T + anchor_pos[None, :]
+        frame_id = WORLD_FRAME
+
     top_corners = corners[:4]
     bottom_corners = corners[4:]
 
@@ -60,6 +109,7 @@ def box_dict_to_msg(box: dict) -> Box3D:
     yaw = float(np.arctan2(edge_u[1], edge_u[0]))
 
     msg = Box3D()
+    msg.header.frame_id = frame_id
     msg.box_id = str(box["box_id"])
     msg.size.x, msg.size.y, msg.size.z = width, depth, max(height, 0.0)
 
@@ -86,6 +136,14 @@ class BoxScanActionServer(Node):
         super().__init__('box_scan_action_server')
         self.declare_parameter('fixture_input_path', '')
         self._sequence = 0
+        # 검출(mvd.detect_boxes_in_base_frame)이 RANSAC 150회 반복이라 수 분 걸릴 수
+        # 있다(사용자 지시 - pick-place 동작 자체를 반복 테스트하는 동안 매번 이걸
+        # 다시 돌릴 필요는 없음). fixture 파일이 안 바뀐 동안은 캐시를 그대로 재사용
+        # 한다 - mtime으로 무효화하므로 새 스캔을 저장하면(캡처 스크립트가 매번 같은
+        # 경로에 덮어쓰므로) 자동으로 다시 계산된다.
+        self._cache_key = None
+        self._cache_boxes = None
+        self._cache_anchor = None
         self._action_server = ActionServer(
             self, ScanBoxes, '/perception/scan_boxes', self.execute_callback,
         )
@@ -115,8 +173,19 @@ class BoxScanActionServer(Node):
             return result
 
         try:
-            points_base = mvd.load_merged_cloud(fixture_input_path)
-            boxes = mvd.detect_boxes_in_base_frame(points_base)
+            cache_key = (fixture_input_path, os.path.getmtime(fixture_input_path))
+            if cache_key == self._cache_key:
+                boxes = self._cache_boxes
+                anchor = self._cache_anchor
+                self.get_logger().info(
+                    f'{fixture_input_path} 변경 없음 - 캐시된 검출 결과 재사용(재검출 생략)')
+            else:
+                points_base = mvd.load_merged_cloud(fixture_input_path)
+                boxes = mvd.detect_boxes_in_base_frame(points_base)
+                anchor = load_scan_anchor(fixture_input_path)
+                self._cache_key = cache_key
+                self._cache_boxes = boxes
+                self._cache_anchor = anchor
         except Exception as exc:
             self.get_logger().error(f'ScanBoxes 실패: {exc}')
             result.success = False
@@ -125,8 +194,15 @@ class BoxScanActionServer(Node):
             goal_handle.abort()
             return result
 
+        if anchor is None:
+            self.get_logger().warn(
+                f'{fixture_input_path} 옆에 anchor json이 없음 - detected_pose를 '
+                f'{mvd.OUTPUT_FRAME} 프레임 그대로 반환합니다(구버전 fixture 호환). '
+                '섀시가 스캔 이후 움직이면 이 좌표는 더 이상 유효하지 않습니다.'
+            )
+
         self._sequence += 1
-        box_msgs = [box_dict_to_msg(b) for b in boxes]
+        box_msgs = [box_dict_to_msg(b, anchor=anchor) for b in boxes]
 
         result.success = True
         result.snapshot_id = f'box_scan_{self._sequence:04d}'

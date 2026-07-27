@@ -39,6 +39,7 @@ world_to_base()/quat_wxyz_to_matrix()와 동일한 공식이다(그 모듈은 op
 의존이라 Isaac 번들 파이썬에 없어 직접 import는 못 하므로 공식만 그대로
 가져왔다 - 결과 좌표계가 어긋나면 안 되므로 두 구현이 어긋나지 않게 유지할 것).
 """
+import json
 import os
 import sys
 from pathlib import Path
@@ -55,7 +56,8 @@ if str(_PLATFORM_SRC) not in sys.path:
 
 import numpy as np  # noqa: E402
 
-import platform_controller_node as pcn  # noqa: E402
+import platform_controller_node as pcn  # noqa: E402  (SimulationApp 인스턴스화가 여기서 일어남)
+from isaacsim.core.utils.rotations import quat_to_euler_angles  # noqa: E402
 
 OUT_DIR = Path(os.environ.get("CART2TRUNK_CART_SCAN_OUT_DIR", "/tmp/cart2trunk_cart_scan"))
 
@@ -161,52 +163,77 @@ def make_usd_camera_rotation(
     return np.column_stack((right, camera_up, backward))
 
 
-def drive_base_to_xy(
-    target_xy: np.ndarray, tolerance_m: float = 0.05, max_steps: int = 1500,
-    smooth_alpha: float = 0.12,
-) -> None:
-    """holo_forward()로 모바일 베이스를 target_xy까지 몬다(99.py drive_to()와 같은
-    폐루프 원리, yaw 목표 없이 현재 자세 유지). base_robot.set_world_pose()로
-    순간이동시켰더니 활성 조인트 드라이브가 걸린 물리 바디를 갑자기 옮기는
-    셈이라 PhysX가 "Illegal BroadPhaseUpdateData"를 내며 리지드바디 pose가
-    NaN/영쿼터니언으로 깨졌다(실측 확인) - 실제로 몰아서 물리 상태를 안전하게
-    유지한다.
+_SMOOTH_ALPHA = 0.12  # 99.py SMOOTH_ALPHA와 동일값.
+_smooth_state = {"vx": 0.0, "vy": 0.0, "wz": 0.0}
 
-    [실측으로 찾은 함정 1] holo_forward(vx,vy,wz)의 vx/vy는 chassis 로컬 프레임
-    기준인데, chassis 자신은 BASE_PATH 부모 Xform에 BASE_FACE_ROT_Z(90도)가
-    이미 적용돼 있어(build_holonomic_base) yaw=0(스폰 직후)이어도 world 프레임과
-    90도 어긋나 있다 - "yaw=0이니 local==world"라고 가정하고 world 프레임 오차를
-    그대로 vx/vy에 넣었더니 발산했다(실측: 6m 넘게 이탈). 99.py drive_to()와 같은
-    공식(ex_l = ex_w*cos(yaw)+ey_w*sin(yaw), ey_l = -ex_w*sin(yaw)+ey_w*cos(yaw))으로
-    매 스텝 실제 world 쿼터니언에서 yaw를 뽑아 오차를 로컬 프레임으로 정확히
-    회전시켜야 한다.
 
-    [실측으로 찾은 함정 2 - 훨씬 심각함] 이 함수는 원래 속도 스무딩 없이 매 스텝
-    비례오차를 그대로 명령했다 - 지속적인 대각선/횡이동(strafe) 구간에서
-    메카넘 롤러 접촉 솔버가 결정론적으로(같은 코드로 반복해도 항상 같은 스텝에서)
-    폭발했다(실측: 각속도가 수백 rad/s에서 시작해 스텝마다 기하급수적으로
-    커져 수백만 rad/s까지 발산, 섀시가 순간적으로 공중으로 튀어오르며 결국
-    NaN). 99.py/cart2trunk_motion.control_loops.drive_to()가 이미 하던
-    지수이동평균 속도 스무딩(SMOOTH_ALPHA=0.12)을 빼먹은 게 원인이었다 -
-    추가하자 같은 구간에서 폭발이 재현되지 않았다(A/B 테스트로 확인)."""
-    vx_s = vy_s = 0.0
-    for _ in range(max_steps):
-        pos, quat_wxyz = pcn.base_robot.get_world_pose()
-        dx, dy = float(target_xy[0] - pos[0]), float(target_xy[1] - pos[1])
-        if np.hypot(dx, dy) < tolerance_m:
+def drive_to(
+    target_x: float = None, target_y: float = None, target_yaw_deg: float = None,
+    tolerance_xy: float = 0.03, tolerance_yaw_deg: float = 2.0,
+    max_speed: float = 0.4, max_wz: float = 0.2, kp_xy: float = 1.8, kp_yaw: float = 0.25,
+    max_steps: int = 3000, label: str = "",
+):
+    """99.py의 drive_to()를 그대로 이식(764행) - 이전 버전(drive_base_to_xy)은 yaw
+    목표를 아예 다루지 않아 99.py와 다른 함수였다. 그게 실제 버그였다 - BASE_FACE_ROT_Z=
+    90도 고정이라 섀시는 항상 yaw=90도(긴 길이축이 Y를 향함)로 스폰되는데,
+    SCAN_STANDOFF_XY의 Y-clearance(standoff_y)는 "도착 후 yaw=0/180(짧은 폭축이
+    Y를 향함)"이라는 전제로 계산돼 있다(99.py 670행 주석) - yaw를 스폰값 그대로
+    유지한 채 위치만 standoff로 옮기면, 실제 카트와의 간격이 formula가 가정한
+    것보다 좁아져(긴 축이 노출되므로) 카트에 닿거나 매우 가까워진다(사용자가 GUI로
+    직접 확인). 회전은 반드시 안전지대(X=CART_CLEAR_X, 카트와 X축으로만 분리된 상태)
+    안에서 끝내야 한다(99.py 953행 주석, 100.py 2267행 주석과 동일 원리) - 이 함수는
+    xy와 yaw를 동시에 폐루프로 수렴시키므로, 호출부가 "회전이 안전한 구간"에서만
+    target_yaw_deg를 바꾸도록 단계를 나눠 호출해야 한다(아래 main() 참고)."""
+    start_pos, start_quat = pcn.base_robot.get_world_pose()
+    start_yaw = float(np.degrees(quat_to_euler_angles(start_quat)[2]))
+    tx = target_x if target_x is not None else float(start_pos[0])
+    ty = target_y if target_y is not None else float(start_pos[1])
+    tyaw = target_yaw_deg if target_yaw_deg is not None else start_yaw
+    print(f"[주행 시작]{' ' + label if label else ''} 목표=({tx:.3f},{ty:.3f},{tyaw:.1f}deg)", flush=True)
+
+    stall_window, stall_min_progress = 150, 0.008
+    last_check_pos = np.array([float(start_pos[0]), float(start_pos[1])])
+    stalled = False
+    step = 0
+    for step in range(1, max_steps + 1):
+        pos, quat = pcn.base_robot.get_world_pose()
+        yaw_deg = float(np.degrees(quat_to_euler_angles(quat)[2]))
+        ex_w, ey_w = tx - float(pos[0]), ty - float(pos[1])
+        eyaw = ((tyaw - yaw_deg + 180) % 360) - 180
+        if abs(ex_w) < tolerance_xy and abs(ey_w) < tolerance_xy and abs(eyaw) < tolerance_yaw_deg:
             break
-        w, x, y, z = quat_wxyz
-        yaw = float(np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
-        local_x = dx * np.cos(yaw) + dy * np.sin(yaw)
-        local_y = -dx * np.sin(yaw) + dy * np.cos(yaw)
-        vx_t = float(np.clip(1.0 * local_x, -0.3, 0.3))
-        vy_t = float(np.clip(1.0 * local_y, -0.3, 0.3))
-        vx_s += smooth_alpha * (vx_t - vx_s)
-        vy_s += smooth_alpha * (vy_t - vy_s)
-        pcn.base_robot.apply_action(pcn.holo_forward(vx_s, vy_s, 0.0))
+        yaw_rad = np.radians(yaw_deg)
+        ex_l = ex_w * np.cos(yaw_rad) + ey_w * np.sin(yaw_rad)
+        ey_l = -ex_w * np.sin(yaw_rad) + ey_w * np.cos(yaw_rad)
+        vx_t = float(np.clip(kp_xy * ex_l, -max_speed, max_speed))
+        vy_t = float(np.clip(kp_xy * ey_l, -max_speed, max_speed))
+        wz_t = float(np.clip(np.radians(kp_yaw * eyaw), -max_wz, max_wz))
+        _smooth_state["vx"] += _SMOOTH_ALPHA * (vx_t - _smooth_state["vx"])
+        _smooth_state["vy"] += _SMOOTH_ALPHA * (vy_t - _smooth_state["vy"])
+        _smooth_state["wz"] += _SMOOTH_ALPHA * (wz_t - _smooth_state["wz"])
+        pcn.base_robot.apply_action(
+            pcn.holo_forward(_smooth_state["vx"], _smooth_state["vy"], _smooth_state["wz"]))
         step_hold(1)
-    pcn.base_robot.apply_action(pcn.holo_forward(0.0, 0.0, 0.0))
-    step_hold(20)
+        if step % stall_window == 0:
+            cur = np.array([float(pos[0]), float(pos[1])])
+            progress = float(np.linalg.norm(cur - last_check_pos))
+            if progress < stall_min_progress and (abs(ex_w) > tolerance_xy or abs(ey_w) > tolerance_xy):
+                stalled = True
+                print(f"  [정체 감지] {progress:.4f}m밖에 못 움직임 - 중단", flush=True)
+                break
+            last_check_pos = cur
+    for _ in range(30):
+        _smooth_state["vx"] *= 1 - _SMOOTH_ALPHA
+        _smooth_state["vy"] *= 1 - _SMOOTH_ALPHA
+        _smooth_state["wz"] *= 1 - _SMOOTH_ALPHA
+        pcn.base_robot.apply_action(
+            pcn.holo_forward(_smooth_state["vx"], _smooth_state["vy"], _smooth_state["wz"]))
+        step_hold(1)
+    final_pos, final_quat = pcn.base_robot.get_world_pose()
+    final_yaw = float(np.degrees(quat_to_euler_angles(final_quat)[2]))
+    print(f"[주행 완료]{' ' + label if label else ''} {step}스텝, 최종=({final_pos[0]:.3f},"
+          f"{final_pos[1]:.3f},{final_yaw:.1f}deg) 정체={stalled}", flush=True)
+    return final_pos, final_yaw, not stalled
 
 
 def step_hold(n: int = 1) -> None:
@@ -335,7 +362,13 @@ def main() -> None:
 
     cart_center_xy = np.asarray(pcn.cart_scene.cart_center_xy, dtype=float)
     cart_half_y = float(pcn.cart_scene.cart_half_y)
-    chassis_half_width = pcn.BASE_WIDTH / 2.0
+    # 99.py STANDOFF_Y와 동일 공식 - CHASSIS_HALF_WIDTH_EFFECTIVE(바퀴/롤러 돌출부
+    # 포함, platform_controller_node.py의 CART_STANDOFF_DIST와 같은 상수)를 써야
+    # 한다. BASE_WIDTH/2.0(차체 폭만, 롤러 돌출 미포함)를 썼던 이전 버전은 99.py
+    # 보다 카트에 약 8cm 더 가깝게 섰다(사용자 지적 - 실측: BASE_WIDTH/2≈0.250m
+    # vs CHASSIS_HALF_WIDTH_EFFECTIVE≈0.329m) - 메카넘 휠/롤러가 카트에 그만큼
+    # 가까워지고 카메라 목표 거리/각도도 99.py 검증값과 달라진다.
+    chassis_half_width = pcn.CHASSIS_HALF_WIDTH_EFFECTIVE
     standoff_y = chassis_half_width + cart_half_y + STANDOFF_MARGIN
     scan_standoff_xy = np.array([cart_center_xy[0], cart_center_xy[1] - standoff_y])
     print(f"[CAPTURE] 카트 center_xy={np.round(cart_center_xy, 3)} half_y={cart_half_y:.3f} "
@@ -347,7 +380,24 @@ def main() -> None:
         pcn.lift_state["h"] = h
         step_hold(1)
 
-    drive_base_to_xy(scan_standoff_xy)
+    # [99.py 953-966행 그대로 이식] BASE_FACE_ROT_Z=90도 고정이라 섀시는 항상
+    # yaw=90도(긴 길이축이 Y를 향함)로 스폰된다. scan_standoff_xy의 Y-clearance
+    # (standoff_y)는 chassis_half_width로 계산했으므로 "도착 후 yaw=0도(짧은
+    # 폭축이 Y를 향함)"이 전제다 - yaw를 스폰값 그대로 둔 채 위치만 옮기면 실제
+    # 카트와의 간격이 formula보다 좁아진다(사용자가 GUI로 직접 확인). 그래서 99.py는
+    # 회전을 "카트와 X축으로만 분리된 안전지대(X=CART_CLEAR_X)" 안에서 끝낸다 - 3단계:
+    #   1단계 - X만 CART_CLEAR_X로(Y/yaw는 스폰값 유지, 회전 없음 - 이미 그 자리라 사실상 대기)
+    #   2단계 - X는 CART_CLEAR_X 고정(카트와 X축 분리 유지)한 채 Y+yaw를 목표로 동시 수렴
+    #   3단계 - Y/yaw는 이미 목표값, X만 좁혀 최종 standoff로 직진(Y축 분리로 안전)
+    _spawn_pos, _spawn_quat = pcn.base_robot.get_world_pose()
+    _spawn_yaw = float(np.degrees(quat_to_euler_angles(_spawn_quat)[2]))
+    _cart_clear_x = float(_spawn_pos[0])
+    drive_to(target_x=_cart_clear_x, target_y=float(_spawn_pos[1]), target_yaw_deg=_spawn_yaw,
+             label="카트 접근 1/3: 회전 안전지대(X만 이동, 회전 없음)")
+    drive_to(target_x=_cart_clear_x, target_y=float(scan_standoff_xy[1]), target_yaw_deg=0.0,
+             label="카트 접근 2/3: 안전지대에서 standoff Y + yaw=0도로 회전")
+    drive_to(target_x=float(scan_standoff_xy[0]), target_y=float(scan_standoff_xy[1]), target_yaw_deg=0.0,
+             label="카트 접근 3/3: yaw/Y 고정한 채 X만 좁혀 최종 접근")
     base_pos_reached, _ = pcn.base_robot.get_world_pose()
     print(f"[CAPTURE] 베이스 도착: pos={np.round(base_pos_reached, 3)}", flush=True)
 
@@ -373,7 +423,8 @@ def main() -> None:
     accumulated_world_points = []
     for i, x_offset in enumerate(CART_SCAN_STRAFE_X_OFFSETS):
         strafe_x = cart_center_xy[0] + x_offset
-        drive_base_to_xy(np.array([strafe_x, scan_standoff_xy[1]]))
+        drive_to(target_x=float(strafe_x), target_y=float(scan_standoff_xy[1]), target_yaw_deg=0.0,
+                 label=f"스캔 위치 {i}로 strafe")
 
         scan_eye_i = np.array([
             strafe_x, cart_center_xy[1] - _SCAN_HORIZONTAL_OFFSET,
@@ -416,7 +467,8 @@ def main() -> None:
         raise RuntimeError("모든 스캔 시점에서 point cloud 획득에 실패했습니다.")
 
     # ---- 기준 위치(중앙) 복귀 + base_link 기준 변환/저장 (99.py와 동일) ----
-    drive_base_to_xy(scan_standoff_xy)
+    drive_to(target_x=float(scan_standoff_xy[0]), target_y=float(scan_standoff_xy[1]), target_yaw_deg=0.0,
+             label="기준 위치(중앙) 복귀")
     base_link_pos, base_link_quat_wxyz = pcn.m0609_robot.get_world_pose()
     merged_world = np.concatenate(accumulated_world_points, axis=0)
     merged_base = world_to_base(
@@ -432,7 +484,58 @@ def main() -> None:
     print(f"[CAPTURE] m0609_base_link world pose: pos={np.round(base_link_pos, 3)} "
           f"quat_wxyz={np.round(base_link_quat_wxyz, 3)}", flush=True)
 
-    pcn.simulation_app.close()
+    # 사용자 지시 - 스캔 후 홀로노믹 베이스가 시작 위치로 복귀한 채로 서버 모드를
+    # 유지해야 하고, 그 이후 들어오는 실제 요청(ExecutePickPlace)이 "그 복귀된
+    # 베이스 위치" 기준으로 정확히 동작해야 한다. merged_base(.npy)는 스캔 시점의
+    # base_link 상대 좌표라 그 자체로는 섀시가 움직이면 무효가 된다 - box_scan_action_
+    # server.py가 여기서 저장하는 "스캔 시점 anchor"(base_link_pos/quat_wxyz)로 즉시
+    # world 좌표로 변환해서 반환하도록 변경했으므로, 이후 섀시가 어디로 움직이든(시작
+    # 위치 복귀 포함) detected_pose는 계속 유효하다. anchor 파일이 없으면
+    # box_scan_action_server.py는 구버전처럼 "그 프레임에서 요청이 왔을 때 즉시 처리"
+    # 가정으로 fallback한다(하위호환, execute_pick_place_action_server.py의 anchor 재해석 참고).
+    anchor_path = OUT_DIR / "merged_cart_scan_anchor.json"
+    anchor_path.write_text(json.dumps({
+        "base_link_pos": [float(v) for v in base_link_pos],
+        "base_link_quat_wxyz": [float(v) for v in base_link_quat_wxyz],
+    }, indent=2))
+    print(f"[CAPTURE] 스캔 시점 anchor 저장: {anchor_path}", flush=True)
+
+    # 스캔 마지막 시점(카트 옆으로 뻗은 자세)에 팔을 그대로 두면 안전하지 않다 - 시작
+    # 자세(joint_3=joint_5=90도 접힘, 100.py raise_lift_and_fold의 접기 부분과 동일 자세)로
+    # 돌아온다. fold_to_known_pose()는 순수 관절공간 보간이라(리프트/섀시 둘 다 안 건드림)
+    # m0609_robot.get_world_pose()가 반환하는 arm base_link pose에 영향이 없다 - 이미
+    # 위에서 point cloud를 base_link_pos/quat 기준으로 저장 완료한 뒤라, 이 접기가
+    # 저장된 좌표계나 CAPTURE_THEN_SERVE의 앵커 유효성(리프트 높이/섀시 pose)에 아무
+    # 영향을 주지 않는다(그 두 값은 그대로 유지된다).
+    fold_to_known_pose()
+    print("[CAPTURE] 팔 시작 자세(joint_3/5=90도 접힘)로 복귀 완료", flush=True)
+
+    # 사용자 지시 - 스캔 후 홀로노믹 베이스는 항상 시작 위치로 복귀하고, 서버 모드도
+    # 유지해서 그 이후 들어오는 실제 요청이 "복귀된 베이스 위치" 기준으로 정확히
+    # 동작해야 한다. box_scan_action_server.py가 위에서 저장한 anchor(스캔 시점
+    # 섀시 pose)로 detected_pose를 이미 world 좌표로 변환해서 반환하도록 바꿨으므로
+    # (execute_pick_place_action_server.py도 header.frame_id="world"면 지금 앵커로
+    # 재해석하지 않고 그대로 쓰도록 바뀜), 이제 섀시가 스캔 후 실제로 움직여도
+    # (이 복귀 포함) detected_pose가 더 이상 깨지지 않는다 - 예전에는 이 안전장치가
+    # 없어서 CAPTURE_THEN_SERVE일 때만 복귀를 생략했었다(이제 그 조건 분기 자체가 불필요).
+    #
+    # 접근의 정확히 역순(3단계 중 1단계는 스폰=CART_CLEAR_X라 원래도 없었으므로
+    # 2단계만 필요) - 1) X만 CART_CLEAR_X로 물러난다(Y=standoff_y, yaw=0 유지 -
+    # 이미 Y축 분리돼 있으므로 안전). 2) 안전지대(X=CART_CLEAR_X)에서 스폰 Y/yaw로
+    # 회전+횡이동(X축 분리 유지돼 안전) - 이러면 정확히 스폰 위치로 돌아간다.
+    drive_to(target_x=_cart_clear_x, target_y=float(scan_standoff_xy[1]), target_yaw_deg=0.0,
+             label="복귀 1/2: standoff -> 회전 안전지대(X만 이동)")
+    drive_to(target_x=_cart_clear_x, target_y=float(_spawn_pos[1]), target_yaw_deg=_spawn_yaw,
+             label="복귀 2/2: 안전지대에서 스폰 Y/yaw로 회전+횡이동")
+    base_pos_final, _ = pcn.base_robot.get_world_pose()
+    print(f"[CAPTURE] 홀로노믹 베이스 시작 위치로 복귀 완료: pos={np.round(base_pos_final, 3)}", flush=True)
+
+    if os.environ.get("CART2TRUNK_CAPTURE_THEN_SERVE", "0") == "1":
+        print("[CAPTURE] CART2TRUNK_CAPTURE_THEN_SERVE=1 - 스캔 종료 후 실제 "
+              "platform_controller_node로 계속 서비스한다(시작 위치로 복귀한 채로)", flush=True)
+        pcn.main()
+    else:
+        pcn.simulation_app.close()
 
 
 if __name__ == "__main__":
