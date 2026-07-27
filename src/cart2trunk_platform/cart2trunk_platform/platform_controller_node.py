@@ -84,6 +84,17 @@ EDU 저장소 100.cart_to_trunk_dual_side_holonomic.py에서 그대로 가져왔
 
 실행:
     HEADLESS=1 isaac_python platform_controller_node.py
+
+[실측 확인된 불안정성 - LD_LIBRARY_PATH를 셸에서 미리 export할 것] 아래 rclpy
+sys.path/LD_LIBRARY_PATH 설정 블록이 os.environ["LD_LIBRARY_PATH"]를 코드
+안에서(셸이 아니라 프로세스 안에서) 채워주지만, 이 프로세스 내부 변경이 rclpy
+C 확장(_rclpy_pybind11)의 자체 의존 라이브러리(librcl_action.so 등) dlopen
+시점에 항상 반영되는 건 아니었다(실측: 같은 코드로 여러 번 실행했을 때 간헐적으로
+"librcl_action.so: cannot open shared object file"로 실패 - 파일 자체는 항상
+존재했고 ldd로도 문제없었음). 실행 전에 셸에서 아래처럼 직접 export하면
+매번 확실히 성공한다:
+    export LD_LIBRARY_PATH=/home/rokey/dev_ws/isaac_sim/isaacsim/_build/linux-x86_64/\
+release/exts/isaacsim.ros2.bridge/humble/lib:$LD_LIBRARY_PATH
 """
 from __future__ import annotations
 
@@ -124,22 +135,18 @@ from isaacsim.core.api import World
 from isaacsim.core.api.materials.physics_material import PhysicsMaterial
 from isaacsim.core.api.objects import FixedCuboid
 from isaacsim.core.prims import SingleArticulation
-from isaacsim.core.utils.extensions import enable_extension
 from isaacsim.core.utils.rotations import euler_angles_to_quat
 from isaacsim.core.utils.types import ArticulationAction
 from isaacsim.robot.manipulators.grippers.surface_gripper import SurfaceGripper
 
-# 100.py류 스캔 스크립트들과 동일 - isaacsim.ros2.bridge가 제공하는 OGN 노드
-# 타입(ROS2CameraHelper 등)은 익스텐션이 활성화돼야 omni.graph 레지스트리에
-# 등록된다. rclpy import용 sys.path/LD_LIBRARY_PATH 설정(위)과는 별개의
-# 활성화 단계 - 둘 다 있어야 카메라 ROS2 브리지가 동작한다.
-#
-# ⚠️ 실측 확인(2026-07-27) - 이 enable_extension() 호출 자체가(카메라 그래프를
-# 실제로 만들기도 전에) 이 PC의 GPU/드라이버 조합(아래 CART2TRUNK_ENABLE_CAMERA_BRIDGE
-# 정의부 참고)에서 omni.graph.image 세그폴트를 유발한다는 게 확인됐다 - 그래서
-# 카메라 브리지를 켤 때만(같은 환경변수로) 호출하도록 뒤로 미뤘다. rclpy 통신
-# (토픽/서비스)은 이 익스텐션 활성화 없이도 이미 별도로 동작해왔으므로(sys.path
-# 기반 import), 카메라를 안 쓰는 실행에는 전혀 영향 없다.
+# ⚠️ 실측 확인(2026-07-27) - 카메라 ROS2 브리지는 원래 isaacsim.ros2.bridge가
+# 제공하는 OGN 노드(IsaacCreateRenderProduct+ROS2CameraHelper 등)로 구현했었는데,
+# 이 PC의 GPU(Blackwell, RTX 5080 Laptop)+드라이버(580.159.03) 조합에서 그 OGN
+# 노드 구성 자체가 반복 재현 스크립트 기준 3/3 세그폴트를 냈다(NVIDIA 이슈
+# #643/#651과 동일 시그니처) - 반면 Camera 클래스로 직접 depth/rgb를 뽑는 경로는
+# 3/3 완전히 안정적이었다. 그래서 카메라는 isaacsim.ros2.bridge 익스텐션도,
+# omni.graph 노드도 전혀 쓰지 않고 Camera 래퍼 + 표준 rclpy 퍼블리셔로만 발행한다
+# (자세한 재현 기록은 cart2trunk_simulation/core/sensor_bridge.py 모듈 docstring).
 #
 # HANDOFF_MSI2.md 2.3절 - M0609 자산(RMPflow/URDF/그리퍼 USD)은 git에 없고 PC마다
 # 로컬 경로가 다르다 - 하드코딩 대신 CART2TRUNK_M0609_DIR 환경변수로 받는다.
@@ -168,7 +175,8 @@ if str(_CART2TRUNK_SIMULATION_SRC) not in sys.path:
 from cart2trunk_simulation.core.cart_scene import build_cart_with_boxes  # noqa: E402
 from cart2trunk_simulation.core.vehicle_scene import build_vehicle  # noqa: E402
 from cart2trunk_simulation.core.sensor_bridge import (  # noqa: E402
-    find_camera_prim_path, initialize_depth_camera, setup_ros2_camera_bridge,
+    camera_info_msg, cleanup_camera_reference_asset, depth_to_image_msg,
+    find_camera_prim_path, initialize_depth_camera,
 )
 
 import rclpy
@@ -176,6 +184,7 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, Float32
 from std_srvs.srv import Trigger
 from geometry_msgs.msg import Twist, PoseStamped
+from sensor_msgs.msg import Image, CameraInfo
 
 # ============================================================
 # 씬 구성 상수 (100.py "82~91번과 동일 홀로노믹 베이스 구성" 절과 동일값)
@@ -571,29 +580,6 @@ m0609_path, m0609_base_link_path, lift_translate_op, lift_scale_op = mount_m0609
 for _ in range(10):
     simulation_app.update()
 
-# ⚠️ 실측 확인된 환경 문제(2026-07-27) - 이 PC의 GPU(Blackwell 계열, RTX 5080
-# Laptop)+드라이버(580.159.03, 검증된 570.169/580.95.05보다 최신) 조합에서
-# IsaacCreateRenderProduct가 6번 중 5번꼴로 omni.graph.image 안에서 세그폴트를
-# 낸다(NVIDIA 개발자 포럼에 같은 시그니처의 알려진 이슈로 보고돼 있음 - 코드
-# 버그 아님). 드라이버 문제 해결 전까지는 카메라 브리지가 다른 작업(모션 등)
-# 테스트를 막지 않도록 기본 비활성화하고 환경변수로만 켠다.
-if os.environ.get("CART2TRUNK_ENABLE_CAMERA_BRIDGE", "0") == "1":
-    enable_extension("isaacsim.ros2.bridge")
-    _depth_camera_prim_path, _all_camera_candidates = find_camera_prim_path(
-        stage, m0609_path, DEPTH_CAMERA_NAME_HINT)
-    if _depth_camera_prim_path is None:
-        raise RuntimeError(f"카메라 프림을 못 찾음 - 발견된 카메라 후보: {_all_camera_candidates}")
-    print(f"[CAMERA] depth 카메라: {_depth_camera_prim_path} "
-          f"(후보 전체: {_all_camera_candidates})", flush=True)
-    depth_camera = initialize_depth_camera(_depth_camera_prim_path, CAMERA_WIDTH, CAMERA_HEIGHT)
-    setup_ros2_camera_bridge(
-        _depth_camera_prim_path, depth_topic=DEPTH_TOPIC, camera_info_topic=CAMERA_INFO_TOPIC,
-        frame_id=CAMERA_FRAME_ID, width=CAMERA_WIDTH, height=CAMERA_HEIGHT)
-    print(f"[ROS2] {DEPTH_TOPIC}, {CAMERA_INFO_TOPIC} 발행 시작 (frame_id={CAMERA_FRAME_ID})", flush=True)
-else:
-    print("[CAMERA] CART2TRUNK_ENABLE_CAMERA_BRIDGE=1이 아니라서 카메라 브리지 비활성화 "
-          "(알려진 드라이버 크래시 이슈 - 모듈 docstring 참고)", flush=True)
-
 m0609_robot = SingleArticulation(prim_path=m0609_base_link_path, name="m0609_arm")
 base_robot = SingleArticulation(prim_path=chassis_path, name="holo_base")
 
@@ -659,9 +645,32 @@ _TEST_TARGET_TOLERANCE_M = 0.1
 
 for _ in range(100):
     set_lift_height(lift_state["h"])
-    # render=True 고정 - 카메라 ROS2 브리지 그래프가 이미 만들어진 뒤라(위 참고),
+    # render=True 고정 - 카메라 ROS2 브리지 그래프가 이미 만들어진 뒤라(아래 참고),
     # 렌더 안 하는 스텝을 섞으면 omni.graph.image 플러그인이 크래시했다(실측 확인).
     world.step(render=True)
+
+# 카메라는 world.reset() + 100 렌더 스텝을 마친 뒤(9.attach_vgp20_camera.py와
+# 비슷한 순서)에 초기화한다 - 실측 결과 이 타이밍 자체가 크래시를 좌우하진
+# 않았지만(sensor_bridge.py 모듈 docstring 참고 - 진짜 원인은 OGN 노드였다),
+# 이미 검증된 순서라 되돌리지 않고 유지한다.
+depth_camera = None
+if os.environ.get("CART2TRUNK_ENABLE_CAMERA_BRIDGE", "0") == "1":
+    _depth_camera_prim_path, _all_camera_candidates = find_camera_prim_path(
+        stage, m0609_path, DEPTH_CAMERA_NAME_HINT)
+    if _depth_camera_prim_path is None:
+        raise RuntimeError(f"카메라 프림을 못 찾음 - 발견된 카메라 후보: {_all_camera_candidates}")
+    print(f"[CAMERA] depth 카메라: {_depth_camera_prim_path} "
+          f"(후보 전체: {_all_camera_candidates})", flush=True)
+    # 9.attach_vgp20_camera.py와 동일 - RSD455에 딸려오는 IMU 센서/중첩
+    # RigidBodyAPI를 먼저 정리한다(sensor_bridge.py 함수 docstring 참고).
+    cleanup_camera_reference_asset(stage, _depth_camera_prim_path)
+    depth_camera = initialize_depth_camera(_depth_camera_prim_path, CAMERA_WIDTH, CAMERA_HEIGHT)
+    for _ in range(10):
+        world.step(render=True)
+    print(f"[CAMERA] {DEPTH_TOPIC}, {CAMERA_INFO_TOPIC} 발행 준비 완료 (frame_id={CAMERA_FRAME_ID}) - "
+          f"PlatformControllerNode가 매 스텝 rclpy로 직접 발행", flush=True)
+else:
+    print("[CAMERA] CART2TRUNK_ENABLE_CAMERA_BRIDGE=1이 아니라서 카메라 브리지 비활성화", flush=True)
 
 gripper = DynamicSuctionGripper(
     end_effector_prim_path=ee_path, gripper_body_path=gripper_body_path, tip_local_offset=TIP_LOCAL_OFFSET,
@@ -768,6 +777,15 @@ class PlatformControllerNode(Node):
         self.create_subscription(PoseStamped, "/m0609/move_to_pose", self._on_m0609_move_to_pose, 10)
         self._m0609_state_pub = self.create_publisher(PoseStamped, "/m0609/state", 10)
         self._gripper_tip_pose_pub = self.create_publisher(PoseStamped, "/gripper/tip_pose", 10)
+
+        # depth_camera가 None이면(CART2TRUNK_ENABLE_CAMERA_BRIDGE=0) 퍼블리셔 자체를
+        # 안 만든다 - sensor_bridge.py 모듈 docstring 참고, OGN 그래프(isaacsim.ros2.bridge)
+        # 대신 Camera 래퍼로 직접 뽑은 데이터를 여기서 표준 rclpy 퍼블리셔로 발행한다.
+        self._depth_pub = None
+        self._camera_info_pub = None
+        if depth_camera is not None:
+            self._depth_pub = self.create_publisher(Image, DEPTH_TOPIC, 10)
+            self._camera_info_pub = self.create_publisher(CameraInfo, CAMERA_INFO_TOPIC, 10)
 
         self.get_logger().info(
             f"platform_controller_node ready (lift + mobile_base + gripper + m0609) - "
@@ -880,17 +898,26 @@ class PlatformControllerNode(Node):
         msg.pose.orientation.w = float(w)
         self._gripper_tip_pose_pub.publish(msg)
 
+    def publish_camera(self) -> None:
+        """depth_camera가 활성화된 경우에만 호출된다(main() 참고). Camera 래퍼가
+        직접 뽑은 depth/intrinsics를 sensor_msgs 메시지로 포장해 발행한다 - OGN
+        그래프(ROS2CameraHelper 등)는 세그폴트 원인이라 아예 쓰지 않는다
+        (sensor_bridge.py 모듈 docstring 참고)."""
+        stamp = self.get_clock().now().to_msg()
+        depth_msg = depth_to_image_msg(depth_camera, CAMERA_FRAME_ID, stamp)
+        if depth_msg is not None:
+            self._depth_pub.publish(depth_msg)
+        self._camera_info_pub.publish(camera_info_msg(depth_camera, CAMERA_FRAME_ID, stamp))
 
-# EDU 저장소 100.cart_to_trunk_dual_side_holonomic.py에 2026-07-27 실측 확인된
-# 문제와 동일한 동기로(매 스텝 world.step(render=True)의 렌더링 비용) 한때
-# RENDER_EVERY_N_STEPS로 렌더링 빈도를 줄이는 걸 시도했었다 - 그런데 카메라
-# ROS2 브리지(cart2trunk_simulation.core.sensor_bridge)를 붙인 뒤 실측
-# 확인: 렌더를 건너뛰는 스텝이 섞이면 OnPlaybackTick 그래프(카메라 렌더
-# 프로덕트/헬퍼)가 렌더 안 된 프레임을 붙잡고 있다가 omni.graph.image
-# 플러그인 안에서 네이티브 크래시(세그폴트, 2회 재현)를 냈다 - 렌더링 자체를
-# 매 스텝 하는 것보다 렌더 스킵이 이 카메라 파이프라인에서는 더 위험하다는
-# 뜻이라 스킵 최적화를 되돌렸다. 물리는 원래도 매 스텝 진행했으니 이 되돌림이
-# RMPflow 쪽 동작에는 영향 없다 - 렌더링만 다시 매 스텝 한다.
+
+# 렌더링 빈도를 줄이는 최적화(RENDER_EVERY_N_STEPS)를 한때 시도했었으나, 당시
+# 카메라 ROS2 브리지가 OGN 그래프(OnPlaybackTick+IsaacCreateRenderProduct+
+# ROS2CameraHelper)로 구현돼 있어서 렌더를 건너뛰는 스텝이 섞이면 그 그래프가
+# omni.graph.image 플러그인 안에서 크래시했다(실측, 2회 재현) - 그래서 매 스텝
+# 렌더링으로 되돌렸다. 지금은 그 OGN 그래프 자체를 더 이상 안 쓰므로(카메라는
+# Camera 래퍼 + 표준 rclpy 퍼블리셔 - sensor_bridge.py 모듈 docstring 참고)
+# 이 크래시 경로는 사라졌지만, render=True 매 스텝 정책은 이미 검증된 동작이라
+# 그대로 유지한다.
 def main():
     rclpy.init()
     node = PlatformControllerNode()
@@ -911,6 +938,8 @@ def main():
                 node.publish_gripper_state()
                 node.publish_m0609_state()
                 node.publish_gripper_tip_pose()
+                if depth_camera is not None:
+                    node.publish_camera()
     finally:
         node.destroy_node()
         rclpy.shutdown()
