@@ -1124,6 +1124,15 @@ class PlatformControllerNode(Node):
             set_lift_height(h)
             lift_state["h"] = h
             world.step(render=True)
+        # [사용자 실측 확인 - 두 번째 발견, 팔과 같은 종류의 버그] main()의 메인
+        # 루프는 step_lift_toward_target()도 매 스텝 무조건 실행해서 lift_state["h"]를
+        # self._target_h로 계속 서보한다. 여기서 lift_state["h"]를 직접 바꿔놓고도
+        # self._target_h를 안 갱신하면, 이 메서드가 반환된 직후부터 그 서보가 다시
+        # 낡은 목표(보통 LIFT_MIN 근처)로 리프트를 끌어내린다 - "PICK 자세까지 잘
+        # 도달했는데 DESCEND_PICK 도중 리프트가 갑자기 다시 낮아진다"로 관측됐다
+        # (팔 쪽 ARM_MODE 버그와 원리가 완전히 같음 - "명시적으로 옮긴 상태"를
+        # 별도의 상시 루프가 모르고 있다가 되돌려버림).
+        self._target_h = target_h
         self._set_joint_hold(target_joints)
 
     def _set_joint_hold(self, joint_target) -> None:
@@ -1185,7 +1194,16 @@ class PlatformControllerNode(Node):
 
         chassis_pos_now, chassis_quat_now = base_robot.get_world_pose()
         r_chassis_now = quat_wxyz_to_matrix(np.asarray(chassis_quat_now, dtype=float))
-        ee_folded_pos0, _ = m0609_robot.end_effector.get_world_pose()
+        # 100.py 원문은 m0609_robot.end_effector.get_world_pose()를 쓴다 -
+        # SingleManipulator 전용 API인데, 이 파일의 m0609_robot은 SingleArticulation
+        # (689행)이라 .end_effector 자체가 없다 - 그대로 복사했더니 이 서비스가
+        # 매번 AttributeError로 죽었고(사용자가 실측/로그 대조로 발견), main()의
+        # 메인 루프가 rclpy.spin_once()를 try/except 없이 부르는 구조라 그 예외가
+        # 그대로 루프를 빠져나가 finally에서 Simulation App을 "정상 종료"시켜버렸다
+        # (트레이스백 없이 조용히 꺼진 것처럼 보인 이유). 이 파일에 이미 있는
+        # _ee_world_pose()(USD prim 직접 조회, 다른 곳에서도 EE pose 읽을 때
+        # 전부 이걸 씀)로 바꾼다.
+        ee_folded_pos0, _ = _ee_world_pose()
         delta_ee_local = r_chassis_now.T @ (
             np.array(ee_folded_pos0, dtype=float) - np.array(chassis_pos_now, dtype=float))
         ref_angle = float(np.arctan2(delta_ee_local[1], delta_ee_local[0]))
